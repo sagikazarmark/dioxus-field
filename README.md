@@ -84,10 +84,6 @@ The `testing` module documentation links to a runnable interaction-probe adapter
 `tests/conformance.rs` is the reference implementation exercising all five tests against a minimal
 conforming widget.
 
-## Status
-
-The crate is currently incubating and its API is not yet stable.
-
 ## Development
 
 Run the local Rust checks with:
