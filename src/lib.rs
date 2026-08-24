@@ -9,14 +9,13 @@
 //!
 //! ```rust
 //! use dioxus::prelude::*;
-//! use dioxus_field::{Binding, Field, FieldContext};
+//! use dioxus_field::Field;
 //!
 //! fn app() -> Element {
 //!     let mut name = use_signal(String::new);
-//!     let binding: Binding<String> = name.into();
 //!
 //!     rsx! {
-//!         Field { binding: FieldContext::new(binding),
+//!         Field { context: name,
 //!             input {
 //!                 value: name,
 //!                 oninput: move |event| name.set(event.value()),
@@ -756,6 +755,18 @@ impl PartialEq for FieldContext {
     }
 }
 
+impl<T: 'static> From<Binding<T>> for FieldContext {
+    fn from(binding: Binding<T>) -> Self {
+        Self::new(binding)
+    }
+}
+
+impl<T: 'static> From<Signal<T>> for FieldContext {
+    fn from(signal: Signal<T>) -> Self {
+        Self::new(Binding::<T>::from(signal))
+    }
+}
+
 /// Provides a binding as the current scope's [`FieldContext`].
 pub fn provide_field_context<T: 'static>(binding: Binding<T>) -> FieldContext {
     provide_context(FieldContext::new(binding))
@@ -831,9 +842,12 @@ struct ActiveFocusRegistration {
 /// Props for the headless [`Field`] context provider.
 #[derive(Clone, Debug, Props, PartialEq)]
 pub struct FieldProps {
-    /// The value binding, metadata, and focus slot provided to descendants.
+    /// The [`FieldContext`] provided to descendants.
+    ///
+    /// Accepts a [`FieldContext`], a [`Binding`], or a [`Signal`]. The prop is named after its
+    /// payload rather than the binding it may carry, since a context can also hold only metadata.
     #[props(into)]
-    pub binding: FieldContext,
+    pub context: FieldContext,
     /// Attributes forwarded to the rendered `div`.
     #[props(extends = GlobalAttributes)]
     pub attributes: Vec<Attribute>,
@@ -851,10 +865,10 @@ pub struct FieldProps {
     reason = "Dioxus Element uses Result as its renderer protocol"
 )]
 pub fn Field(props: FieldProps) -> Element {
-    let has_meta_values = props.binding.meta_values.is_some();
-    let meta_values = props.binding.meta_values.clone().unwrap_or_default();
+    let has_meta_values = props.context.meta_values.is_some();
+    let meta_values = props.context.meta_values.clone().unwrap_or_default();
     let synced_meta = use_synced_field_meta_state(&meta_values);
-    let mut context = props.binding;
+    let mut context = props.context;
 
     if has_meta_values {
         context = context.with_meta(synced_meta);

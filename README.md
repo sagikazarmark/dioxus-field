@@ -23,18 +23,17 @@ commits without depending on a form library or prescribing rendered controls.
 
 ## Quick Start
 
-Wrap a normal Dioxus signal in a binding and provide it to a field-shaped widget:
+Provide a normal Dioxus signal through a `Field` to a field-shaped widget:
 
 ```rust
 use dioxus::prelude::*;
-use dioxus_field::{Binding, Field, FieldContext};
+use dioxus_field::Field;
 
 fn app() -> Element {
     let mut name = use_signal(String::new);
-    let binding: Binding<String> = name.into();
 
     rsx! {
-        Field { binding: FieldContext::new(binding),
+        Field { context: name,
             input {
                 value: name,
                 oninput: move |event| name.set(event.value()),

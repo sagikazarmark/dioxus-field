@@ -246,7 +246,7 @@ fn resolution_app(harness: ResolutionHarness) -> Element {
 
     rsx! {
         Field {
-            binding: FieldContext::new(context_binding).with_meta(context_meta),
+            context: FieldContext::new(context_binding).with_meta(context_meta),
             ConformingWidget {
                 binding: explicit_binding,
                 meta: explicit_meta,
@@ -346,7 +346,7 @@ fn FocusRequester(props: FocusRequesterProps) -> Element {
 fn focus_app(harness: FocusHarness) -> Element {
     rsx! {
         Field {
-            binding: FieldContext::empty(),
+            context: FieldContext::empty(),
             ConformingWidget {
                 focus_probe: harness.probe.clone(),
                 driver: harness.driver.clone(),
@@ -401,7 +401,7 @@ fn id_registration_app(harness: Rc<IdRegistrationHarness>) -> Element {
 
     rsx! {
         Field {
-            binding: FieldContext::empty().with_meta(meta),
+            context: FieldContext::empty().with_meta(meta),
             if show_parts() {
                 FieldDescription { id: "registry-description", "Description" }
                 FieldError { id: "registry-error" }
