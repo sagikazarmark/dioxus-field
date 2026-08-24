@@ -1,0 +1,35 @@
+[package]
+name = "dioxus-field"
+version = "0.1.0"
+description = "A form-library-agnostic field convention for Dioxus"
+edition = "2024"
+rust-version = "1.92"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/sagikazarmark/dioxus-field"
+homepage = "https://github.com/sagikazarmark/dioxus-field"
+keywords = ["dioxus", "field", "binding", "headless"]
+categories = ["web-programming", "gui"]
+
+[dependencies]
+dioxus = { version = "0.7.10", default-features = false, features = ["hooks", "html", "macro", "signals"] }
+dioxus-core = "0.7.10"
+dioxus-hooks = "0.7.10"
+dioxus-signals = "0.7.10"
+
+[dev-dependencies]
+dioxus-ssr = "0.7.10"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Whether ignoring a returned handle is meaningful depends on the surrounding Dioxus scope.
+must_use_candidate = "allow"
+
+[package.metadata.release]
+sign-commit = true
+sign-tag = true
+tag-message = "Release {{version}}"
+tag-prefix = ""
