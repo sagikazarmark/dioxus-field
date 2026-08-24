@@ -1,6 +1,6 @@
 # dioxus-field
 
-[![ci](https://img.shields.io/github/actions/workflow/status/sagikazarmark/dioxus-field/ci.yaml?style=flat-square&label=ci)](https://github.com/sagikazarmark/dioxus-field/actions/workflows/ci.yaml)
+[![ci](https://img.shields.io/github/actions/workflow/status/sagikazarmark/dioxus-field/dagger.yaml?style=flat-square&label=ci)](https://github.com/sagikazarmark/dioxus-field/actions/workflows/dagger.yaml)
 [![openssf scorecard](https://api.securityscorecards.dev/projects/github.com/sagikazarmark/dioxus-field/badge?style=flat-square&label=openssf%20scorecard)](https://securityscorecards.dev/viewer/?uri=github.com/sagikazarmark/dioxus-field)
 [![crates.io](https://img.shields.io/crates/v/dioxus-field?style=flat-square)](https://crates.io/crates/dioxus-field)
 [![docs.rs](https://img.shields.io/docsrs/dioxus-field?style=flat-square)](https://docs.rs/dioxus-field)
