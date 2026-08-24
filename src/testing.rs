@@ -37,7 +37,7 @@ use dioxus_signals::ReadSignal;
 use crate::{Binding, ChangeOrigin, FieldMeta, FieldMetaOverrides};
 
 /// Records the relative order of a widget commit and its containing submit handler.
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct CommitOrderProbe {
     events: Rc<RefCell<Vec<CommitOrderEvent>>>,
 }
@@ -81,6 +81,7 @@ enum CommitOrderEvent {
 }
 
 /// Records values written through a [`Binding`] together with their [`ChangeOrigin`].
+#[derive(Debug)]
 pub struct ChangeOriginProbe<T> {
     writes: Rc<RefCell<Vec<(T, ChangeOrigin)>>>,
 }
@@ -236,7 +237,7 @@ pub fn assert_meta_flag_precedence(observed: OverridableMetaFlags, expected: Ove
 }
 
 /// Records focus callbacks reached through a widget's resolved [`crate::FocusRequest`].
-#[derive(Clone, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct FocusRoundTripProbe {
     focus_calls: Rc<Cell<usize>>,
 }

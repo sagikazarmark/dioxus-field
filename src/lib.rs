@@ -9,14 +9,13 @@
 //!
 //! ```rust
 //! use dioxus::prelude::*;
-//! use dioxus_field::{Binding, Field, FieldContext};
+//! use dioxus_field::Field;
 //!
 //! fn app() -> Element {
 //!     let mut name = use_signal(String::new);
-//!     let binding: Binding<String> = name.into();
 //!
 //!     rsx! {
-//!         Field { binding: FieldContext::new(binding),
+//!         Field { context: name,
 //!             input {
 //!                 value: name,
 //!                 oninput: move |event| name.set(event.value()),
@@ -26,10 +25,12 @@
 //! }
 //! ```
 
-use std::{any::Any, cell::RefCell, rc::Rc};
+use std::{any::Any, cell::RefCell, fmt, rc::Rc};
 
 use dioxus::prelude::{Props, dioxus_elements, rsx};
-use dioxus_core::{Attribute, Callback, Element, provide_context, try_consume_context, use_hook};
+use dioxus_core::{
+    Attribute, Callback, Element, has_context, provide_context, try_consume_context, use_hook,
+};
 use dioxus_hooks::{use_effect, use_reactive, use_signal};
 use dioxus_signals::{ReadSignal, ReadableExt, Signal, WritableExt};
 
@@ -87,6 +88,21 @@ pub struct FieldMeta {
     touched: Signal<bool>,
     dirty: Signal<bool>,
     registered_ids: Signal<RegisteredIds>,
+}
+
+impl fmt::Debug for FieldMeta {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FieldMeta")
+            .field("id", &*self.id.peek())
+            .field("name", &*self.name.peek())
+            .field("required", &*self.required.peek())
+            .field("disabled", &*self.disabled.peek())
+            .field("invalid", &*self.invalid.peek())
+            .field("errors", &*self.errors.peek())
+            .field("touched", &*self.touched.peek())
+            .field("dirty", &*self.dirty.peek())
+            .finish_non_exhaustive()
+    }
 }
 
 impl FieldMeta {
@@ -301,6 +317,14 @@ pub struct FieldMetaIdRegistration {
     token: u64,
 }
 
+impl fmt::Debug for FieldMetaIdRegistration {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FieldMetaIdRegistration")
+            .field("token", &self.token)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Drop for FieldMetaIdRegistration {
     fn drop(&mut self) {
         self.registered_ids
@@ -445,6 +469,14 @@ impl<T: 'static> Binding<T> {
     }
 }
 
+impl<T: fmt::Debug + 'static> fmt::Debug for Binding<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Binding")
+            .field("read", &*self.read.peek())
+            .finish_non_exhaustive()
+    }
+}
+
 impl<T: 'static> Clone for Binding<T> {
     fn clone(&self) -> Self {
         Self {
@@ -501,6 +533,16 @@ pub struct BindingPropTrio<T: 'static> {
     pub on_commit: Callback<()>,
 }
 
+impl<T: fmt::Debug + 'static> fmt::Debug for BindingPropTrio<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BindingPropTrio")
+            .field("value", &*self.value.peek())
+            .field("on_change", &self.on_change)
+            .field("on_commit", &self.on_commit)
+            .finish()
+    }
+}
+
 impl<T: 'static> From<Binding<T>> for BindingPropTrio<T> {
     fn from(binding: Binding<T>) -> Self {
         binding.into_trio()
@@ -544,6 +586,14 @@ impl FocusRequest {
     }
 }
 
+impl fmt::Debug for FocusRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FocusRequest")
+            .field("registered", &self.0.borrow().current.is_some())
+            .finish()
+    }
+}
+
 impl PartialEq for FocusRequest {
     fn eq(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.0, &other.0)
@@ -562,6 +612,15 @@ pub struct FocusRegistration {
     token: u64,
 }
 
+impl fmt::Debug for FocusRegistration {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FocusRegistration")
+            .field("request", &self.request)
+            .field("token", &self.token)
+            .finish()
+    }
+}
+
 impl Drop for FocusRegistration {
     fn drop(&mut self) {
         let mut state = self.request.0.borrow_mut();
@@ -575,11 +634,19 @@ impl Drop for FocusRegistration {
 /// Type-erased context for one field's binding, metadata, and focus request slot.
 ///
 /// The context itself is intentionally not generic. This lets [`use_binding`] distinguish an
-/// absent context from a present context containing the wrong value type.
+/// absent context from a present context containing the wrong value type, and lets [`Field`]
+/// accept any value type without becoming generic itself.
+///
+/// # Equality
+///
+/// Two contexts are equal when their bindings are equal under [`Binding`]'s identity equality and
+/// their metadata is equal, regardless of when either context was constructed. The focus request
+/// slot is intentionally excluded: [`Field`] pins the slot of the first context it receives for
+/// its lifetime, so the slot carried by a context built on a later render is never observed by
+/// descendants, and comparing it would only defeat memoization.
 #[derive(Clone)]
 pub struct FieldContext {
-    binding: Option<Rc<dyn Any>>,
-    value_type_name: Option<&'static str>,
+    binding: Option<ErasedBinding>,
     meta: Option<FieldMeta>,
     meta_values: Option<FieldMetaValues>,
     focus_request: FocusRequest,
@@ -589,8 +656,7 @@ impl FieldContext {
     /// Creates context for a binding.
     pub fn new<T: 'static>(binding: Binding<T>) -> Self {
         Self {
-            binding: Some(Rc::new(binding)),
-            value_type_name: Some(std::any::type_name::<T>()),
+            binding: Some(ErasedBinding::new(binding)),
             meta: None,
             meta_values: None,
             focus_request: FocusRequest::default(),
@@ -601,7 +667,6 @@ impl FieldContext {
     pub fn empty() -> Self {
         Self {
             binding: None,
-            value_type_name: None,
             meta: None,
             meta_values: None,
             focus_request: FocusRequest::default(),
@@ -611,8 +676,7 @@ impl FieldContext {
     /// Replaces the context's value binding.
     #[must_use]
     pub fn with_binding<T: 'static>(mut self, binding: Binding<T>) -> Self {
-        self.binding = Some(Rc::new(binding));
-        self.value_type_name = Some(std::any::type_name::<T>());
+        self.binding = Some(ErasedBinding::new(binding));
         self
     }
 
@@ -638,6 +702,9 @@ impl FieldContext {
     }
 
     /// Returns the context's focus request slot.
+    ///
+    /// [`Field`] pins the slot of the first context it receives, so producers that request focus
+    /// through a context must keep that context stable across renders.
     pub fn focus_request(&self) -> FocusRequest {
         self.focus_request.clone()
     }
@@ -648,15 +715,18 @@ impl FieldContext {
     ///
     /// Panics when the field context contains no binding or a binding for a different value type.
     pub fn resolve<T: 'static>(&self) -> Binding<T> {
-        self.binding
+        let erased = self
+            .binding
             .as_ref()
-            .unwrap_or_else(|| panic!("Field Context contains no value binding"))
+            .unwrap_or_else(|| panic!("Field Context contains no value binding"));
+
+        erased
+            .binding
             .downcast_ref::<Binding<T>>()
             .unwrap_or_else(|| {
                 panic!(
                     "Field Context contains a binding for {}, but a binding for {} was requested",
-                    self.value_type_name
-                        .expect("a present binding should have a value type name"),
+                    erased.value_type_name,
                     std::any::type_name::<T>()
                 )
             })
@@ -673,23 +743,86 @@ impl FieldContext {
     }
 }
 
+impl fmt::Debug for FieldContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FieldContext")
+            .field(
+                "value_type_name",
+                &self.binding.as_ref().map(|binding| binding.value_type_name),
+            )
+            .field("meta", &self.meta)
+            .field("meta_values", &self.meta_values)
+            .field("focus_request", &self.focus_request)
+            .finish_non_exhaustive()
+    }
+}
+
 impl PartialEq for FieldContext {
     fn eq(&self, other: &Self) -> bool {
-        match (&self.binding, &other.binding) {
-            (Some(left), Some(right)) if !Rc::ptr_eq(left, right) => return false,
-            (Some(_), None) | (None, Some(_)) => return false,
-            _ => {}
-        }
-
-        self.meta == other.meta
+        self.binding == other.binding
+            && self.meta == other.meta
             && self.meta_values == other.meta_values
-            && self.focus_request == other.focus_request
+    }
+}
+
+impl<T: 'static> From<Binding<T>> for FieldContext {
+    fn from(binding: Binding<T>) -> Self {
+        Self::new(binding)
+    }
+}
+
+impl<T: 'static> From<Signal<T>> for FieldContext {
+    fn from(signal: Signal<T>) -> Self {
+        Self::new(Binding::<T>::from(signal))
+    }
+}
+
+/// A value binding erased to `dyn Any` together with the comparator for its concrete type.
+///
+/// The comparator is captured at erasure time so [`FieldContext`] equality can delegate to
+/// [`Binding`]'s identity equality instead of comparing wrapper allocations.
+#[derive(Clone)]
+struct ErasedBinding {
+    binding: Rc<dyn Any>,
+    value_type_name: &'static str,
+    eq: fn(&dyn Any, &dyn Any) -> bool,
+}
+
+impl ErasedBinding {
+    fn new<T: 'static>(binding: Binding<T>) -> Self {
+        Self {
+            binding: Rc::new(binding),
+            value_type_name: std::any::type_name::<T>(),
+            eq: |left, right| match (
+                left.downcast_ref::<Binding<T>>(),
+                right.downcast_ref::<Binding<T>>(),
+            ) {
+                (Some(left), Some(right)) => left == right,
+                _ => false,
+            },
+        }
+    }
+}
+
+impl PartialEq for ErasedBinding {
+    fn eq(&self, other: &Self) -> bool {
+        (self.eq)(&*self.binding, &*other.binding)
     }
 }
 
 /// Provides a binding as the current scope's [`FieldContext`].
+///
+/// The provided context keeps the focus request slot of the context this scope provided on an
+/// earlier render, so widgets that memoized on that render stay registered with the slot producers
+/// observe.
 pub fn provide_field_context<T: 'static>(binding: Binding<T>) -> FieldContext {
-    provide_context(FieldContext::new(binding))
+    let mut context = FieldContext::new(binding);
+
+    if let Some(existing) = has_context::<FieldContext>() {
+        context = context.with_focus_request(existing.focus_request());
+    }
+
+    provide_context(context)
 }
 
 /// Resolves a binding using explicit prop, [`FieldContext`], then uncontrolled-state precedence.
@@ -760,11 +893,14 @@ struct ActiveFocusRegistration {
 }
 
 /// Props for the headless [`Field`] context provider.
-#[derive(Clone, Props, PartialEq)]
+#[derive(Clone, Debug, Props, PartialEq)]
 pub struct FieldProps {
-    /// The value binding, metadata, and focus slot provided to descendants.
+    /// The [`FieldContext`] provided to descendants.
+    ///
+    /// Accepts a [`FieldContext`], a [`Binding`], or a [`Signal`]. The prop is named after its
+    /// payload rather than the binding it may carry, since a context can also hold only metadata.
     #[props(into)]
-    pub binding: FieldContext,
+    pub context: FieldContext,
     /// Attributes forwarded to the rendered `div`.
     #[props(extends = GlobalAttributes)]
     pub attributes: Vec<Attribute>,
@@ -776,16 +912,23 @@ pub struct FieldProps {
 ///
 /// On Dioxus 0.7.10, pass listeners through an explicit `attributes: vec![...]` prop so listener
 /// ordering remains visible at the call site.
+///
+/// # Memoization
+///
+/// Children authored inline in `rsx!` and inline listener attributes compare unequal on every
+/// parent render, so a `Field` receiving either re-renders with its parent regardless of
+/// [`FieldContext`] equality. Forwarding a received element through the `children` prop keeps it
+/// comparable; context equality then decides whether `Field` re-renders.
 #[allow(non_snake_case)]
 #[allow(
     clippy::missing_errors_doc,
     reason = "Dioxus Element uses Result as its renderer protocol"
 )]
 pub fn Field(props: FieldProps) -> Element {
-    let has_meta_values = props.binding.meta_values.is_some();
-    let meta_values = props.binding.meta_values.clone().unwrap_or_default();
+    let has_meta_values = props.context.meta_values.is_some();
+    let meta_values = props.context.meta_values.clone().unwrap_or_default();
     let synced_meta = use_synced_field_meta_state(&meta_values);
-    let mut context = props.binding;
+    let mut context = props.context;
 
     if has_meta_values {
         context = context.with_meta(synced_meta);
@@ -800,7 +943,7 @@ pub fn Field(props: FieldProps) -> Element {
 }
 
 /// Props for the headless [`Label`] part.
-#[derive(Clone, Props, PartialEq)]
+#[derive(Clone, Debug, Props, PartialEq)]
 pub struct LabelProps {
     /// Explicit metadata, which wins over Field Context metadata.
     #[props(default)]
@@ -844,7 +987,7 @@ pub fn Label(props: LabelProps) -> Element {
 }
 
 /// Props for the headless [`FieldDescription`] part.
-#[derive(Clone, Props, PartialEq)]
+#[derive(Clone, Debug, Props, PartialEq)]
 pub struct FieldDescriptionProps {
     /// Stable id registered with the resolved field metadata for this part's lifetime.
     #[props(into)]
@@ -892,7 +1035,7 @@ pub fn FieldDescription(props: FieldDescriptionProps) -> Element {
 }
 
 /// Props for the headless [`FieldError`] part.
-#[derive(Clone, Props, PartialEq)]
+#[derive(Clone, Debug, Props, PartialEq)]
 pub struct FieldErrorProps {
     /// Stable id registered with the resolved field metadata for this part's lifetime.
     #[props(into)]

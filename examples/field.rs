@@ -19,7 +19,7 @@ fn app() -> Element {
     });
 
     rsx! {
-        Field { binding: FieldContext::new(binding).with_meta(meta),
+        Field { context: FieldContext::new(binding).with_meta(meta),
             Label { "Name" }
             input {
                 value: name,

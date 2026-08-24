@@ -15,7 +15,7 @@ fn from_signal_preserves_two_way_access_and_identity() {
         let second: Binding<i32> = signal.into();
 
         assert_eq!((first.read)(), 1);
-        assert!(first == second);
+        assert_eq!(first, second);
 
         first.write(2, ChangeOrigin::Programmatic);
         assert_eq!(signal(), 2);
@@ -115,10 +115,10 @@ fn binding_resolution_prefers_explicit_then_context_then_internal_state() {
         provide_field_context(context.clone());
 
         let resolved_explicit = use_binding(Some(explicit.clone()), 30);
-        assert!(resolved_explicit == explicit);
+        assert_eq!(resolved_explicit, explicit);
 
         let resolved_context = use_binding(None, 30);
-        assert!(resolved_context == context);
+        assert_eq!(resolved_context, context);
 
         VNode::empty()
     }
@@ -168,8 +168,8 @@ fn identity_equality_never_equates_independent_bindings() {
         let first_clone = first.clone();
         let second: Binding<i32> = second_signal.into();
 
-        assert!(first == first_clone);
-        assert!(first != second);
+        assert_eq!(first, first_clone);
+        assert_ne!(first, second);
 
         VNode::empty()
     }

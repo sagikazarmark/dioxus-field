@@ -23,18 +23,17 @@ commits without depending on a form library or prescribing rendered controls.
 
 ## Quick Start
 
-Wrap a normal Dioxus signal in a binding and provide it to a field-shaped widget:
+Provide a normal Dioxus signal through a `Field` to a field-shaped widget:
 
 ```rust
 use dioxus::prelude::*;
-use dioxus_field::{Binding, Field, FieldContext};
+use dioxus_field::Field;
 
 fn app() -> Element {
     let mut name = use_signal(String::new);
-    let binding: Binding<String> = name.into();
 
     rsx! {
-        Field { binding: FieldContext::new(binding),
+        Field { context: name,
             input {
                 value: name,
                 oninput: move |event| name.set(event.value()),
@@ -49,7 +48,10 @@ derived accessibility attributes.
 
 On Dioxus 0.7.10, forward listeners through an explicit `attributes: vec![...]` collection or an
 explicit `Option<EventHandler<_>>` prop. Bare listener props passed through `extends` are not yet a
-safe forwarding mechanism, and duplicate listeners on one element silently keep the first.
+safe forwarding mechanism, and duplicate listeners on one element silently keep the first. Upstream
+tracks this in [DioxusLabs/dioxus#4019](https://github.com/DioxusLabs/dioxus/issues/4019), resolved
+on `main` by [DioxusLabs/dioxus#5554](https://github.com/DioxusLabs/dioxus/pull/5554) for the 0.8
+release line.
 
 ## Conformance Testing
 
