@@ -26,7 +26,7 @@
 //! }
 //! ```
 
-use std::{any::Any, cell::RefCell, rc::Rc};
+use std::{any::Any, cell::RefCell, fmt, rc::Rc};
 
 use dioxus::prelude::{Props, dioxus_elements, rsx};
 use dioxus_core::{Attribute, Callback, Element, provide_context, try_consume_context, use_hook};
@@ -87,6 +87,21 @@ pub struct FieldMeta {
     touched: Signal<bool>,
     dirty: Signal<bool>,
     registered_ids: Signal<RegisteredIds>,
+}
+
+impl fmt::Debug for FieldMeta {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FieldMeta")
+            .field("id", &*self.id.peek())
+            .field("name", &*self.name.peek())
+            .field("required", &*self.required.peek())
+            .field("disabled", &*self.disabled.peek())
+            .field("invalid", &*self.invalid.peek())
+            .field("errors", &*self.errors.peek())
+            .field("touched", &*self.touched.peek())
+            .field("dirty", &*self.dirty.peek())
+            .finish_non_exhaustive()
+    }
 }
 
 impl FieldMeta {
@@ -301,6 +316,14 @@ pub struct FieldMetaIdRegistration {
     token: u64,
 }
 
+impl fmt::Debug for FieldMetaIdRegistration {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FieldMetaIdRegistration")
+            .field("token", &self.token)
+            .finish_non_exhaustive()
+    }
+}
+
 impl Drop for FieldMetaIdRegistration {
     fn drop(&mut self) {
         self.registered_ids
@@ -445,6 +468,14 @@ impl<T: 'static> Binding<T> {
     }
 }
 
+impl<T: fmt::Debug + 'static> fmt::Debug for Binding<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Binding")
+            .field("read", &*self.read.peek())
+            .finish_non_exhaustive()
+    }
+}
+
 impl<T: 'static> Clone for Binding<T> {
     fn clone(&self) -> Self {
         Self {
@@ -501,6 +532,16 @@ pub struct BindingPropTrio<T: 'static> {
     pub on_commit: Callback<()>,
 }
 
+impl<T: fmt::Debug + 'static> fmt::Debug for BindingPropTrio<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BindingPropTrio")
+            .field("value", &*self.value.peek())
+            .field("on_change", &self.on_change)
+            .field("on_commit", &self.on_commit)
+            .finish()
+    }
+}
+
 impl<T: 'static> From<Binding<T>> for BindingPropTrio<T> {
     fn from(binding: Binding<T>) -> Self {
         binding.into_trio()
@@ -544,6 +585,14 @@ impl FocusRequest {
     }
 }
 
+impl fmt::Debug for FocusRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FocusRequest")
+            .field("registered", &self.0.borrow().current.is_some())
+            .finish()
+    }
+}
+
 impl PartialEq for FocusRequest {
     fn eq(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.0, &other.0)
@@ -560,6 +609,15 @@ struct FocusRequestState {
 pub struct FocusRegistration {
     request: FocusRequest,
     token: u64,
+}
+
+impl fmt::Debug for FocusRegistration {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FocusRegistration")
+            .field("request", &self.request)
+            .field("token", &self.token)
+            .finish()
+    }
 }
 
 impl Drop for FocusRegistration {
@@ -673,6 +731,17 @@ impl FieldContext {
     }
 }
 
+impl fmt::Debug for FieldContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FieldContext")
+            .field("value_type_name", &self.value_type_name)
+            .field("meta", &self.meta)
+            .field("meta_values", &self.meta_values)
+            .field("focus_request", &self.focus_request)
+            .finish_non_exhaustive()
+    }
+}
+
 impl PartialEq for FieldContext {
     fn eq(&self, other: &Self) -> bool {
         match (&self.binding, &other.binding) {
@@ -760,7 +829,7 @@ struct ActiveFocusRegistration {
 }
 
 /// Props for the headless [`Field`] context provider.
-#[derive(Clone, Props, PartialEq)]
+#[derive(Clone, Debug, Props, PartialEq)]
 pub struct FieldProps {
     /// The value binding, metadata, and focus slot provided to descendants.
     #[props(into)]
@@ -800,7 +869,7 @@ pub fn Field(props: FieldProps) -> Element {
 }
 
 /// Props for the headless [`Label`] part.
-#[derive(Clone, Props, PartialEq)]
+#[derive(Clone, Debug, Props, PartialEq)]
 pub struct LabelProps {
     /// Explicit metadata, which wins over Field Context metadata.
     #[props(default)]
@@ -844,7 +913,7 @@ pub fn Label(props: LabelProps) -> Element {
 }
 
 /// Props for the headless [`FieldDescription`] part.
-#[derive(Clone, Props, PartialEq)]
+#[derive(Clone, Debug, Props, PartialEq)]
 pub struct FieldDescriptionProps {
     /// Stable id registered with the resolved field metadata for this part's lifetime.
     #[props(into)]
@@ -892,7 +961,7 @@ pub fn FieldDescription(props: FieldDescriptionProps) -> Element {
 }
 
 /// Props for the headless [`FieldError`] part.
-#[derive(Clone, Props, PartialEq)]
+#[derive(Clone, Debug, Props, PartialEq)]
 pub struct FieldErrorProps {
     /// Stable id registered with the resolved field metadata for this part's lifetime.
     #[props(into)]
