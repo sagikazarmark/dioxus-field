@@ -35,6 +35,10 @@ fn app() -> Element {
 fn main() {
     let mut dom = VirtualDom::new(app);
     dom.rebuild_in_place();
+    // The label, description, and error parts register their ids while they render, so the
+    // control's `aria-labelledby`, `aria-describedby`, and `aria-errormessage` land on the render
+    // that follows their first mount.
+    dom.render_immediate_to_vec();
 
     println!("{}", dioxus_ssr::render(&dom));
 }

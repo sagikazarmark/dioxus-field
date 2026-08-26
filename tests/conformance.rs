@@ -3,8 +3,8 @@ use std::{cell::RefCell, rc::Rc};
 use dioxus::prelude::{Props, dioxus_elements, rsx};
 use dioxus_core::{Attribute, Callback, Element, VNode, VirtualDom};
 use dioxus_field::{
-    Binding, ChangeOrigin, Field, FieldContext, FieldDescription, FieldError, FieldMeta,
-    FieldMetaValues, FocusRequest,
+    Binding, ChangeOrigin, Field, FieldContext, FieldControlOptions, FieldDescription, FieldError,
+    FieldMeta, FieldMetaValues, FocusRequest,
     testing::{
         ChangeOriginProbe, CommitOrderProbe, FocusRoundTripProbe, OverridableMetaFlags,
         assert_binding_resolution_precedence, assert_field_part_ids, assert_meta_flag_precedence,
@@ -12,7 +12,7 @@ use dioxus_field::{
     },
     use_binding, use_field_meta, use_field_meta_state, use_focus_registration, use_focus_request,
 };
-use dioxus_hooks::use_signal;
+use dioxus_hooks::{use_callback, use_signal};
 use dioxus_signals::{ReadSignal, Signal, WritableExt};
 
 #[derive(Default)]
@@ -84,6 +84,8 @@ struct ConformingWidgetProps {
     #[props(default)]
     disabled: Option<bool>,
     #[props(default)]
+    required: Option<bool>,
+    #[props(default)]
     focus_probe: Option<FocusRoundTripProbe>,
     driver: WidgetDriver,
 }
@@ -92,13 +94,26 @@ struct ConformingWidgetProps {
 fn ConformingWidget(props: ConformingWidgetProps) -> Element {
     let binding = use_binding(props.binding, 30);
     let meta = use_field_meta(props.meta);
+    let options = FieldControlOptions::new()
+        .invalid(props.invalid)
+        .disabled(props.disabled)
+        .required(props.required);
     let flags = OverridableMetaFlags::new(
         props.invalid.unwrap_or_else(|| meta.invalid()),
         props.disabled.unwrap_or_else(|| meta.disabled()),
-    );
+    )
+    .with_required(props.required.unwrap_or_else(|| meta.required()));
     let mut focused = use_signal(|| false);
     let on_control_focus = props.focus_probe.map(|probe| probe.on_focus());
-    use_focus_registration(Callback::new(move |()| {
+    // `use_callback` keeps one callback identity across renders, which `use_focus_registration`
+    // requires: `Callback::new` here would re-register every render and steal the field's focus
+    // slot from a sibling widget.
+    use_focus_registration(use_callback(move |()| {
+        // A disabled control focuses nothing rather than handing focus to a proxy element.
+        if flags.disabled {
+            return;
+        }
+
         focused.set(true);
         if let Some(on_control_focus) = on_control_focus {
             on_control_focus.call(());
@@ -117,17 +132,15 @@ fn ConformingWidget(props: ConformingWidgetProps) -> Element {
         on_commit: Some(Callback::new(move |()| commit_binding.commit())),
     };
 
-    let mut attributes = Vec::new();
+    let mut attributes = meta.attributes_for(&options);
 
-    if flags.invalid {
-        attributes.push(Attribute::new("data-invalid", "true", None, false));
-    }
-    if flags.disabled {
-        attributes.push(Attribute::new("data-disabled", "true", None, false));
-    }
     if focused() {
         attributes.push(Attribute::new("data-focused", "true", None, false));
     }
+
+    // `attributes_for` returns a sorted list, and `dioxus-core` diffs a spread with a sorted
+    // merge-join, so anything appended has to be sorted back in.
+    attributes.sort_by(|left, right| left.name.cmp(right.name));
 
     rsx! {
         input {
@@ -229,6 +242,7 @@ fn resolution_app(harness: ResolutionHarness) -> Element {
     let context_meta = use_field_meta_state(FieldMetaValues {
         disabled: true,
         invalid: Some(true),
+        required: true,
         ..FieldMetaValues::default()
     });
     let explicit_meta = use_field_meta_state(FieldMetaValues {
@@ -251,6 +265,7 @@ fn resolution_app(harness: ResolutionHarness) -> Element {
                 binding: explicit_binding,
                 meta: explicit_meta,
                 invalid: false,
+                required: true,
                 driver: harness.explicit_driver,
             }
             ConformingWidget {
@@ -309,11 +324,11 @@ fn binding_resolution_precedence_holds_for_values_and_meta_flags() {
     );
     assert_meta_flag_precedence(
         explicit_driver.flags(),
-        OverridableMetaFlags::new(false, false),
+        OverridableMetaFlags::new(false, false).with_required(true),
     );
     assert_meta_flag_precedence(
         context_driver.flags(),
-        OverridableMetaFlags::new(true, false),
+        OverridableMetaFlags::new(true, false).with_required(true),
     );
 }
 
@@ -356,6 +371,20 @@ fn focus_app(harness: FocusHarness) -> Element {
     }
 }
 
+fn disabled_focus_app(harness: FocusHarness) -> Element {
+    rsx! {
+        Field {
+            context: FieldContext::empty(),
+            ConformingWidget {
+                disabled: true,
+                focus_probe: harness.probe.clone(),
+                driver: harness.driver.clone(),
+            }
+            FocusRequester { harness }
+        }
+    }
+}
+
 #[test]
 fn focus_request_round_trips_to_the_widget_control() {
     let probe = FocusRoundTripProbe::new();
@@ -381,6 +410,34 @@ fn focus_request_round_trips_to_the_widget_control() {
 
     probe.assert_focus_round_trip();
     assert!(dioxus_ssr::render(&dom).contains("data-focused=\"true\""));
+}
+
+#[test]
+fn a_focus_request_does_not_move_focus_while_the_control_is_disabled() {
+    let probe = FocusRoundTripProbe::new();
+    let request = Rc::new(RefCell::new(None));
+    let mut dom = VirtualDom::new_with_props(
+        disabled_focus_app,
+        FocusHarness {
+            probe: probe.clone(),
+            driver: WidgetDriver::default(),
+            request: Rc::clone(&request),
+        },
+    );
+    dom.rebuild_in_place();
+
+    assert!(
+        request
+            .borrow()
+            .as_ref()
+            .expect("widget should expose a focus request")
+            .request(),
+        "a disabled control still owns the field's focus slot; it just declines to focus"
+    );
+    dom.render_immediate_to_vec();
+
+    probe.assert_focus_not_moved();
+    assert!(!dioxus_ssr::render(&dom).contains("data-focused=\"true\""));
 }
 
 #[derive(Default)]

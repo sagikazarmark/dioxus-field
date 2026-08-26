@@ -6,7 +6,7 @@ use std::{
 use dioxus::prelude::*;
 use dioxus_core::AttributeValue;
 use dioxus_field::{
-    Field, FieldContext, FieldDescription, FieldError, FieldMeta, FieldMetaOverrides,
+    Field, FieldContext, FieldControlOptions, FieldDescription, FieldError, FieldMeta,
     FieldMetaValues, FocusRequest, Label, use_field_meta_state, use_focus_registration,
 };
 
@@ -61,13 +61,11 @@ fn description_and_error_ids_follow_part_mount_and_drop() {
     dom.rebuild_in_place();
 
     let meta = probe.meta.borrow().expect("app should expose field meta");
-    let attributes = meta.attributes_with(FieldMetaOverrides {
-        invalid: Some(true),
-        disabled: None,
-    });
+    let attributes = meta.attributes_for(&FieldControlOptions::new().invalid(Some(true)));
     assert_eq!(
         attribute_text(&attributes, "aria-describedby").as_deref(),
-        Some("email-help")
+        Some("email-help email-error"),
+        "error ids join the description ids while invalid, since aria-errormessage support is uneven"
     );
     assert_eq!(
         attribute_text(&attributes, "aria-errormessage").as_deref(),
@@ -82,10 +80,7 @@ fn description_and_error_ids_follow_part_mount_and_drop() {
         .set(false);
     dom.render_immediate_to_vec();
 
-    let attributes = meta.attributes_with(FieldMetaOverrides {
-        invalid: Some(true),
-        disabled: None,
-    });
+    let attributes = meta.attributes_for(&FieldControlOptions::new().invalid(Some(true)));
     assert_eq!(attribute_text(&attributes, "aria-describedby"), None);
     assert_eq!(attribute_text(&attributes, "aria-errormessage"), None);
 }
@@ -101,7 +96,7 @@ fn field_parts_render_standalone_with_explicit_or_default_metadata() {
         });
 
         rsx! {
-            Label { meta, "Email" }
+            Label { id: Rc::from("email-label"), meta, "Email" }
             FieldDescription { id: "standalone-help", meta, "Use a work address" }
             FieldError { id: "standalone-error", meta }
         }
@@ -111,7 +106,7 @@ fn field_parts_render_standalone_with_explicit_or_default_metadata() {
     dom.rebuild_in_place();
     assert_eq!(
         dioxus_ssr::render(&dom),
-        "<label for=\"email\" data-invalid=\"true\">Email</label><div id=\"standalone-help\" data-invalid=\"true\">Use a work address</div><div id=\"standalone-error\" aria-live=\"polite\" data-invalid=\"true\">Required</div>"
+        "<label id=\"email-label\" for=\"email\" data-invalid=\"true\">Email</label><div id=\"standalone-help\" data-invalid=\"true\">Use a work address</div><div id=\"standalone-error\" aria-live=\"polite\" data-invalid=\"true\"><div>Required</div></div>"
     );
 }
 
@@ -203,7 +198,9 @@ fn FocusWidget(props: FocusWidgetProps) -> Element {
         .widget_renders
         .set(props.probe.widget_renders.get() + 1);
     let probe = Rc::clone(&props.probe);
-    use_focus_registration(Callback::new(move |()| {
+    // `use_callback` keeps one callback identity across renders. `Callback::new` here would
+    // re-register on every render and steal the field's focus slot from a sibling widget.
+    use_focus_registration(use_callback(move |()| {
         probe.calls.set(probe.calls.get() + 1);
     }));
 
@@ -300,7 +297,11 @@ fn invalid_changes_reach_field_error_without_rerendering_the_field_parent() {
     let mut dom = VirtualDom::new_with_props(reactive_error_app, Rc::clone(&probe));
     dom.rebuild_in_place();
 
-    assert_eq!(dioxus_ssr::render(&dom), "<div></div>");
+    assert_eq!(
+        dioxus_ssr::render(&dom),
+        "<div><div id=\"email-error\" aria-live=\"polite\"></div></div>",
+        "the live region must already be in the accessibility tree before the first error arrives"
+    );
     let mut meta = probe.meta.borrow().expect("app should expose field meta");
     meta.set_errors(vec![Rc::from("Enter a valid email")]);
     dom.render_immediate_to_vec();
@@ -308,6 +309,149 @@ fn invalid_changes_reach_field_error_without_rerendering_the_field_parent() {
     assert_eq!(probe.parent_renders.get(), 1);
     assert_eq!(
         dioxus_ssr::render(&dom),
-        "<div><div id=\"email-error\" aria-live=\"polite\" data-invalid=\"true\">Enter a valid email</div></div>"
+        "<div><div id=\"email-error\" aria-live=\"polite\" data-invalid=\"true\"><div>Enter a valid email</div></div></div>"
+    );
+}
+
+struct FocusOwnershipProbe {
+    first_calls: Cell<usize>,
+    second_calls: Cell<usize>,
+    nudge: RefCell<Option<Signal<usize>>>,
+    request: RefCell<Option<FocusRequest>>,
+}
+
+impl FocusOwnershipProbe {
+    fn calls(&self) -> (usize, usize) {
+        (self.first_calls.get(), self.second_calls.get())
+    }
+
+    fn request(&self) -> bool {
+        self.request
+            .borrow()
+            .as_ref()
+            .expect("a widget should expose the field's focus request")
+            .request()
+    }
+}
+
+impl PartialEq for FocusOwnershipProbe {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self, other)
+    }
+}
+
+#[derive(Clone, Props, PartialEq)]
+struct OwnedFocusWidgetProps {
+    probe: Rc<FocusOwnershipProbe>,
+    first: bool,
+    /// An unrelated value that re-renders this widget without changing anything about focus.
+    #[props(default)]
+    nudge: usize,
+}
+
+#[allow(non_snake_case)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "Dioxus components receive their generated properties by value"
+)]
+fn OwnedFocusWidget(props: OwnedFocusWidgetProps) -> Element {
+    let probe = Rc::clone(&props.probe);
+    let first = props.first;
+    let request = use_focus_registration(use_callback(move |()| {
+        let calls = if first {
+            &probe.first_calls
+        } else {
+            &probe.second_calls
+        };
+        calls.set(calls.get() + 1);
+    }));
+    props.probe.request.borrow_mut().replace(request);
+
+    VNode::empty()
+}
+
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "VirtualDom entrypoints receive their root properties by value"
+)]
+fn focus_ownership_app(probe: Rc<FocusOwnershipProbe>) -> Element {
+    let nudge = use_signal(|| 0);
+    probe.nudge.borrow_mut().replace(nudge);
+
+    rsx! {
+        Field {
+            context: FieldContext::empty(),
+            OwnedFocusWidget { probe: Rc::clone(&probe), first: true, nudge: nudge() }
+            OwnedFocusWidget { probe, first: false }
+        }
+    }
+}
+
+#[test]
+fn focus_ownership_survives_an_unrelated_rerender_of_a_sibling_widget() {
+    let probe = Rc::new(FocusOwnershipProbe {
+        first_calls: Cell::new(0),
+        second_calls: Cell::new(0),
+        nudge: RefCell::new(None),
+        request: RefCell::new(None),
+    });
+    let mut dom = VirtualDom::new_with_props(focus_ownership_app, Rc::clone(&probe));
+    dom.rebuild_in_place();
+
+    assert!(probe.request());
+    assert_eq!(
+        probe.calls(),
+        (0, 1),
+        "the last widget to register owns the field's focus slot"
+    );
+
+    probe
+        .nudge
+        .borrow_mut()
+        .as_mut()
+        .expect("app should expose the nudge signal")
+        .set(1);
+    dom.render_immediate_to_vec();
+
+    assert!(probe.request());
+    assert_eq!(
+        probe.calls(),
+        (0, 2),
+        "re-rendering a sibling must not move the field's focus slot to it"
+    );
+}
+
+#[test]
+fn an_explicit_required_prop_overrides_the_metadata_state_on_every_part() {
+    fn app() -> Element {
+        let meta = use_field_meta_state(FieldMetaValues {
+            id: Some(Rc::from("email")),
+            required: true,
+            invalid: Some(true),
+            errors: vec![Rc::from("Required")],
+            ..FieldMetaValues::default()
+        });
+
+        rsx! {
+            Field { context: FieldContext::empty().with_meta(meta),
+                Label { id: Rc::from("email-label"), required: false, "Email" }
+                FieldDescription { id: "email-help", required: false, "Use a work address" }
+                FieldError { id: "email-error", required: false }
+            }
+        }
+    }
+
+    let mut dom = VirtualDom::new(app);
+    dom.rebuild_in_place();
+    let rendered = dioxus_ssr::render(&dom);
+
+    assert!(
+        !rendered.contains("data-required"),
+        "an explicit required prop must suppress the metadata's own required state, got {rendered}"
+    );
+    assert_eq!(
+        rendered.matches("data-invalid=\"true\"").count(),
+        3,
+        "the states left unoverridden must still come from the metadata, got {rendered}"
     );
 }

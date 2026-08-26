@@ -13,13 +13,13 @@
 //!   [`CommitOrderProbe`] and [`ChangeOriginProbe`] (trio-only widgets imply
 //!   [`ChangeOrigin::User`]).
 //! - **Field-aware**: the widget additionally resolves the Field Context. Applicable tests: the
-//!   three resolution-precedence assertions, [`FocusRoundTripProbe`], and
+//!   three resolution-precedence assertions, both [`FocusRoundTripProbe`] assertions, and
 //!   [`assert_field_part_ids`].
 //!
 //! # Example
 //!
 //! The [runnable interaction-probe adapter] demonstrates how callbacks created during rendering
-//! reach a registry-owned driver. The [complete conformance test] exercises all five required tests
+//! reach a registry-owned driver. The [complete conformance test] exercises all six required tests
 //! against a minimal field-aware widget.
 //!
 //! [runnable interaction-probe adapter]: https://docs.rs/crate/dioxus-field/latest/source/examples/conformance.rs
@@ -34,7 +34,7 @@ use std::{
 use dioxus_core::{Attribute, AttributeValue, Callback};
 use dioxus_signals::ReadSignal;
 
-use crate::{Binding, ChangeOrigin, FieldMeta, FieldMetaOverrides};
+use crate::{Binding, ChangeOrigin, FieldControlOptions, FieldMeta};
 
 /// Records the relative order of a widget commit and its containing submit handler.
 #[derive(Clone, Debug, Default)]
@@ -142,19 +142,32 @@ impl<T> Default for ChangeOriginProbe<T> {
     }
 }
 
-/// The two independently overridable metadata flags required by the convention.
+/// The independently overridable metadata flags required by the convention.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct OverridableMetaFlags {
     /// The resolved invalid state.
     pub invalid: bool,
     /// The resolved disabled state.
     pub disabled: bool,
+    /// The resolved required state.
+    pub required: bool,
 }
 
 impl OverridableMetaFlags {
-    /// Creates one observed or expected pair of metadata flags.
+    /// Creates one observed or expected set of metadata flags, with `required` left false.
     pub const fn new(invalid: bool, disabled: bool) -> Self {
-        Self { invalid, disabled }
+        Self {
+            invalid,
+            disabled,
+            required: false,
+        }
+    }
+
+    /// Returns these flags with the resolved required state replaced.
+    #[must_use]
+    pub const fn with_required(mut self, required: bool) -> Self {
+        self.required = required;
+        self
     }
 }
 
@@ -266,6 +279,24 @@ impl FocusRoundTripProbe {
             "one producer focus request must reach the widget's control exactly once"
         );
     }
+
+    /// Asserts that no producer focus request moved focus.
+    ///
+    /// Drive the widget's focus request while it is disabled, then call this. A disabled control
+    /// must focus nothing: focusing a proxy element instead pulls focus off whatever the user was
+    /// on, and `HTMLElement.focus()` reports success on a disabled element, so nothing downstream
+    /// can detect the difference.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the widget moved focus anyway.
+    pub fn assert_focus_not_moved(&self) {
+        assert_eq!(
+            self.focus_calls.get(),
+            0,
+            "a focus request must not move focus while the control is disabled"
+        );
+    }
 }
 
 impl PartialEq for FocusRoundTripProbe {
@@ -280,6 +311,10 @@ impl PartialEq for FocusRoundTripProbe {
 /// expected slices after they drop. Id order must match mount order because ARIA id references are
 /// rendered in registration order.
 ///
+/// While the field is invalid, `aria-describedby` carries the description ids followed by every
+/// error id, and `aria-errormessage` carries only the first error id — it takes a single IDREF in
+/// ARIA 1.2, so a list there is malformed and exposes no error at all.
+///
 /// # Panics
 ///
 /// Panics when the metadata's ARIA id references differ from the expected ids.
@@ -288,19 +323,19 @@ pub fn assert_field_part_ids(
     expected_description_ids: &[&str],
     expected_error_ids: &[&str],
 ) {
-    let attributes = meta.attributes_with(FieldMetaOverrides {
-        invalid: Some(true),
-        disabled: None,
-    });
+    let attributes = meta.attributes_for(&FieldControlOptions::new().invalid(Some(true)));
+    let mut expected_described_by = expected_description_ids.to_vec();
+    expected_described_by.extend_from_slice(expected_error_ids);
+
     assert_eq!(
         attribute_text(&attributes, "aria-describedby"),
-        joined_ids(expected_description_ids),
-        "description ids must match the currently mounted description parts"
+        joined_ids(&expected_described_by),
+        "description ids, then error ids, must match the currently mounted parts"
     );
     assert_eq!(
-        attribute_text(&attributes, "aria-errormessage"),
-        joined_ids(expected_error_ids),
-        "error ids must match the currently mounted error parts"
+        attribute_text(&attributes, "aria-errormessage").as_deref(),
+        expected_error_ids.first().copied(),
+        "aria-errormessage must reference the first mounted error part and nothing else"
     );
 }
 
