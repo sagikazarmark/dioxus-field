@@ -1366,7 +1366,8 @@ pub struct FieldProps {
     /// payload rather than the binding it may carry, since a context can also hold only metadata.
     #[props(into)]
     pub context: FieldContext,
-    /// Attributes forwarded to the rendered `div`.    ///
+    /// Attributes forwarded to the rendered `div`.
+    ///
     /// Sorted by attribute name and deduplicated with the part's own, which `dioxus-core` requires
     /// of any spread list. A forwarded attribute wins its name.
     #[props(extends = GlobalAttributes)]
@@ -1434,7 +1435,8 @@ pub struct LabelProps {
     /// Explicit required state, which wins over the metadata state.
     #[props(default)]
     pub required: Option<bool>,
-    /// Attributes forwarded to the rendered `label`.    ///
+    /// Attributes forwarded to the rendered `label`.
+    ///
     /// Sorted by attribute name and deduplicated with the part's own, which `dioxus-core` requires
     /// of any spread list. A forwarded attribute wins its name.
     #[props(extends = GlobalAttributes)]
@@ -1494,7 +1496,8 @@ pub struct FieldDescriptionProps {
     /// Explicit required state, which wins over the metadata state.
     #[props(default)]
     pub required: Option<bool>,
-    /// Attributes forwarded to the rendered description `div`.    ///
+    /// Attributes forwarded to the rendered description `div`.
+    ///
     /// Sorted by attribute name and deduplicated with the part's own, which `dioxus-core` requires
     /// of any spread list. A forwarded attribute wins its name.
     #[props(extends = GlobalAttributes)]
@@ -1548,7 +1551,8 @@ pub struct FieldErrorProps {
     /// Explicit required state used by data-state attributes.
     #[props(default)]
     pub required: Option<bool>,
-    /// Attributes forwarded to the rendered error `div`.    ///
+    /// Attributes forwarded to the rendered error `div`.
+    ///
     /// Sorted by attribute name and deduplicated with the part's own, which `dioxus-core` requires
     /// of any spread list. A forwarded attribute wins its name.
     #[props(extends = GlobalAttributes)]
