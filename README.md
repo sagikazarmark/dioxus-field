@@ -85,10 +85,16 @@ because their validity lattices disagree: native `disabled` is legal on a `butto
 cover the common elements: `NATIVE` for `input` / `textarea` / `select`, `BUTTON_WIDGET` for
 `button[role=checkbox|switch]`, and `ARIA_WIDGET` for `div[role=radiogroup]`.
 
-The returned vector is sorted by attribute name and holds at most one entry per name. `dioxus-core`
-requires both of any spread list — its attribute diff is a sorted merge-join, so an unsorted or
-duplicated spread makes a later render drop attributes that did not change. Preserve the sort when
-appending to the vector; `merge_attributes` in `dioxus-primitives` already does.
+The returned vector is sorted by attribute name and holds at most one entry per name. The sort is
+what `dioxus-core` requires of any spread — its attribute diff is a sorted merge-join, so an
+unsorted spread makes a later render drop attributes that did not change. The single entry per name
+guards the neighbouring failure, where a duplicate that drops to one deletes the attribute outright.
+
+Appending a name the vector does not already carry needs only
+`sort_by(|left, right| left.name.cmp(right.name))` afterwards. To replace a value the metadata
+supplied, set the matching override on `FieldControlOptions` instead of appending a second entry.
+Controls merging through `merge_attributes` in `dioxus-primitives` need neither — it sorts and
+dedupes every list it is given.
 
 ## Conformance Testing
 

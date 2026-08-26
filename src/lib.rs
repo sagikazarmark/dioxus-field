@@ -435,11 +435,19 @@ impl FieldMeta {
     /// # Guarantees
     ///
     /// The returned vector is **sorted by attribute name** and carries at most one entry per
-    /// attribute name and namespace. `dioxus-core` requires both of any spread attribute list: its
-    /// attribute diff is a sorted merge-join, so an unsorted or duplicated list makes a later
-    /// render drop attributes that did not change. Preserve the sort when appending to this
-    /// vector — [`merge_attributes`] in `dioxus-primitives` does, and anything hand-rolled must
-    /// too.
+    /// attribute name and namespace.
+    ///
+    /// The sort is what `dioxus-core` requires of any spread list: its attribute diff is a sorted
+    /// merge-join, so an unsorted list makes a later render drop attributes that did not change.
+    /// The single entry per name guards the neighbouring failure, where a spread carrying one name
+    /// twice and dropping to once emits a removal, deleting an attribute the new render still has.
+    ///
+    /// Appending a name this vector does not already carry needs only
+    /// `sort_by(|left, right| left.name.cmp(right.name))` afterwards. To *replace* a value the
+    /// metadata supplied, set the matching override on [`FieldControlOptions`] rather than
+    /// appending a second entry — that is what the overrides are for. Controls merging through
+    /// [`merge_attributes`] in `dioxus-primitives` need neither: it sorts and dedupes every list it
+    /// is given.
     ///
     /// [`merge_attributes`]: https://docs.rs/dioxus-primitives
     ///

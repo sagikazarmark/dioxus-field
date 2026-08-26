@@ -138,8 +138,9 @@ fn ConformingWidget(props: ConformingWidgetProps) -> Element {
         attributes.push(Attribute::new("data-focused", "true", None, false));
     }
 
-    // `attributes_for` returns a sorted list, and `dioxus-core` diffs a spread with a sorted
-    // merge-join, so anything appended has to be sorted back in.
+    // `attributes_for` returns a sorted list and `dioxus-core` diffs a spread with a sorted
+    // merge-join, so an append has to be sorted back in. Sorting is all this needs:
+    // `data-focused` is a name `attributes_for` never emits, so it cannot duplicate one.
     attributes.sort_by(|left, right| left.name.cmp(right.name));
 
     rsx! {
