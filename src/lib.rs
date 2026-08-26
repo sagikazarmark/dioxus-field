@@ -697,6 +697,36 @@ fn use_part_id(explicit: Option<Rc<str>>, prefix: &'static str) -> Rc<str> {
     explicit.unwrap_or(generated)
 }
 
+// Dioxus cannot compose an `Into<Rc<str>>` conversion with an optional prop setter.
+#[doc(hidden)]
+pub struct OptionalRcStrPropMarker;
+
+impl<'a> dioxus_core::SuperFrom<&'a str, OptionalRcStrPropMarker> for Option<Rc<str>> {
+    fn super_from(value: &'a str) -> Self {
+        Some(Rc::from(value))
+    }
+}
+
+impl dioxus_core::SuperFrom<String, OptionalRcStrPropMarker> for Option<Rc<str>> {
+    fn super_from(value: String) -> Self {
+        Some(Rc::from(value))
+    }
+}
+
+impl dioxus_core::SuperFrom<Box<str>, OptionalRcStrPropMarker> for Option<Rc<str>> {
+    fn super_from(value: Box<str>) -> Self {
+        Some(Rc::from(value))
+    }
+}
+
+impl<'a> dioxus_core::SuperFrom<std::borrow::Cow<'a, str>, OptionalRcStrPropMarker>
+    for Option<Rc<str>>
+{
+    fn super_from(value: std::borrow::Cow<'a, str>) -> Self {
+        Some(Rc::from(value))
+    }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 struct RegisteredId {
     token: u64,
@@ -1481,9 +1511,10 @@ pub fn Label(props: LabelProps) -> Element {
 /// Props for the headless [`FieldDescription`] part.
 #[derive(Clone, Debug, Props, PartialEq)]
 pub struct FieldDescriptionProps {
-    /// Stable id registered with the resolved field metadata for this part's lifetime.
-    #[props(into)]
-    pub id: Rc<str>,
+    /// The rendered description's own id, registered with the resolved field metadata for this
+    /// part's lifetime. Defaults to a generated id.
+    #[props(default)]
+    pub id: Option<Rc<str>>,
     /// Explicit metadata, which wins over Field Context metadata.
     #[props(default)]
     pub meta: Option<FieldMeta>,
@@ -1508,6 +1539,8 @@ pub struct FieldDescriptionProps {
 
 /// Renders an unstyled description and registers its id for `aria-describedby` chaining.
 ///
+/// When no id is supplied, this part generates one that remains stable for its mounted lifetime.
+///
 /// This part can resolve metadata from Field Context, accept it explicitly, or run standalone.
 #[allow(non_snake_case)]
 #[allow(
@@ -1516,8 +1549,8 @@ pub struct FieldDescriptionProps {
 )]
 pub fn FieldDescription(props: FieldDescriptionProps) -> Element {
     let meta = use_field_meta(props.meta);
-    use_field_meta_id_registration(&meta, RegisteredIdKind::Description, props.id.clone());
-    let id = props.id.to_string();
+    let id = use_part_id(props.id, "description");
+    use_field_meta_id_registration(&meta, RegisteredIdKind::Description, Rc::clone(&id));
     let attributes = part_attributes(
         &meta,
         FieldStateOverrides {
@@ -1529,16 +1562,17 @@ pub fn FieldDescription(props: FieldDescriptionProps) -> Element {
     );
 
     rsx! {
-        div { id: id, ..attributes, {props.children} }
+        div { id: id.to_string(), ..attributes, {props.children} }
     }
 }
 
 /// Props for the headless [`FieldError`] part.
 #[derive(Clone, Debug, Props, PartialEq)]
 pub struct FieldErrorProps {
-    /// Stable id registered with the resolved field metadata for this part's lifetime.
-    #[props(into)]
-    pub id: Rc<str>,
+    /// The rendered error region's own id, registered with the resolved field metadata for this
+    /// part's lifetime. Defaults to a generated id.
+    #[props(default)]
+    pub id: Option<Rc<str>>,
     /// Explicit metadata, which wins over Field Context metadata.
     #[props(default)]
     pub meta: Option<FieldMeta>,
@@ -1565,6 +1599,8 @@ pub struct FieldErrorProps {
 /// enters the accessibility tree in the same update as its content is not announced reliably, so
 /// the region has to exist before the first error arrives.
 ///
+/// When no id is supplied, this part generates one that remains stable for its mounted lifetime.
+///
 /// This part can resolve metadata from Field Context, accept it explicitly, or run standalone.
 #[allow(non_snake_case)]
 #[allow(
@@ -1573,9 +1609,9 @@ pub struct FieldErrorProps {
 )]
 pub fn FieldError(props: FieldErrorProps) -> Element {
     let meta = use_field_meta(props.meta);
-    use_field_meta_id_registration(&meta, RegisteredIdKind::Error, props.id.clone());
+    let id = use_part_id(props.id, "error");
+    use_field_meta_id_registration(&meta, RegisteredIdKind::Error, Rc::clone(&id));
     let invalid = props.invalid.unwrap_or_else(|| meta.invalid());
-    let id = props.id.to_string();
     let errors = if invalid { meta.errors() } else { Vec::new() };
     let attributes = part_attributes(
         &meta,
@@ -1589,7 +1625,7 @@ pub fn FieldError(props: FieldErrorProps) -> Element {
 
     rsx! {
         div {
-            id: id,
+            id: id.to_string(),
             aria_live: "polite",
             ..attributes,
             for error in errors {

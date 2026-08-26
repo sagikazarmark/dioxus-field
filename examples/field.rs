@@ -26,8 +26,8 @@ fn app() -> Element {
                 oninput: move |event| name.set(event.value()),
                 ..meta.attributes(),
             }
-            FieldDescription { id: "profile-name-help", "Shown on your profile" }
-            FieldError { id: "profile-name-error" }
+            FieldDescription { "Shown on your profile" }
+            FieldError {}
         }
     }
 }

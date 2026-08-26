@@ -34,9 +34,26 @@ fn registration_app(probe: Rc<RegistrationProbe>) -> Element {
         Field {
             context: FieldContext::empty().with_meta(meta),
             if show_parts() {
-                FieldDescription { id: "email-help", "Use a work address" }
+                FieldDescription { id: String::from("email-help"), "Use a work address" }
                 FieldError { id: "email-error" }
             }
+        }
+    }
+}
+
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "VirtualDom entrypoints receive their root properties by value"
+)]
+fn generated_id_registration_app(probe: Rc<RegistrationProbe>) -> Element {
+    let meta = use_field_meta_state(FieldMetaValues::default());
+    probe.meta.borrow_mut().replace(meta);
+
+    rsx! {
+        Field {
+            context: FieldContext::empty().with_meta(meta),
+            FieldDescription { "Use a work address" }
+            FieldError {}
         }
     }
 }
@@ -83,6 +100,44 @@ fn description_and_error_ids_follow_part_mount_and_drop() {
     let attributes = meta.attributes_for(&FieldControlOptions::new().invalid(Some(true)));
     assert_eq!(attribute_text(&attributes, "aria-describedby"), None);
     assert_eq!(attribute_text(&attributes, "aria-errormessage"), None);
+}
+
+#[test]
+fn description_and_error_generate_stable_registered_ids_when_omitted() {
+    let probe = Rc::new(RegistrationProbe {
+        meta: RefCell::new(None),
+        show_parts: RefCell::new(None),
+    });
+    let mut dom = VirtualDom::new_with_props(generated_id_registration_app, Rc::clone(&probe));
+    dom.rebuild_in_place();
+
+    let meta = probe.meta.borrow().expect("app should expose field meta");
+    let attributes = meta.attributes_for(&FieldControlOptions::new().invalid(Some(true)));
+    let described_by = attribute_text(&attributes, "aria-describedby")
+        .expect("generated description and error ids should be registered");
+    let ids = described_by.split_whitespace().collect::<Vec<_>>();
+    assert_eq!(ids.len(), 2);
+    let [description_id, error_id] = ids.as_slice() else {
+        unreachable!("the id count was asserted above")
+    };
+    assert!(description_id.starts_with("dxf-description-"));
+    assert!(error_id.starts_with("dxf-error-"));
+    assert_eq!(
+        attribute_text(&attributes, "aria-errormessage").as_deref(),
+        Some(*error_id)
+    );
+
+    let rendered = dioxus_ssr::render(&dom);
+    assert!(rendered.contains(&format!("id=\"{description_id}\"")));
+    assert!(rendered.contains(&format!("id=\"{error_id}\"")));
+
+    dom.render_immediate_to_vec();
+    let attributes = meta.attributes_for(&FieldControlOptions::new().invalid(Some(true)));
+    assert_eq!(
+        attribute_text(&attributes, "aria-describedby").as_deref(),
+        Some(described_by.as_str()),
+        "generated ids must remain stable for the mounted lifetime of each part"
+    );
 }
 
 #[test]
