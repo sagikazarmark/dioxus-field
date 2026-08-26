@@ -334,3 +334,85 @@ fn a_forwarded_attribute_wins_its_name_and_is_never_emitted_twice() {
         "`Field` sorts and dedupes its own forwarded list too, got {rendered}"
     );
 }
+
+#[test]
+fn merging_groups_resolves_each_name_to_the_last_group_that_set_it() {
+    let meta = vec![
+        Attribute::new("id", "from-meta", None, false),
+        Attribute::new("name", "from-meta", None, false),
+    ];
+    let base = vec![
+        Attribute::new("name", "from-base", None, false),
+        Attribute::new("class", "from-base", None, false),
+    ];
+    let explicit = vec![Attribute::new("name", "from-explicit", None, false)];
+
+    // The group order the registry controls use: base sits between the metadata and the explicit
+    // props, so it outranks the metadata and loses to the explicit props.
+    let merged = dioxus_field::merge_attributes(vec![meta, base, explicit]);
+
+    assert_eq!(
+        merged
+            .iter()
+            .map(|attribute| match &attribute.value {
+                AttributeValue::Text(text) => format!("{}={text}", attribute.name),
+                _ => attribute.name.to_string(),
+            })
+            .collect::<Vec<_>>(),
+        ["class=from-base", "id=from-meta", "name=from-explicit",],
+        "each name resolves to the last group that set it, and the result stays sorted"
+    );
+}
+
+#[test]
+fn merging_keeps_one_entry_per_name_and_namespace() {
+    let merged = dioxus_field::merge_attributes(vec![
+        vec![
+            Attribute::new("style", "red", Some("color"), false),
+            Attribute::new("style", "1px", Some("border-width"), false),
+        ],
+        vec![Attribute::new("style", "blue", Some("color"), false)],
+    ]);
+
+    assert_eq!(
+        merged.len(),
+        2,
+        "a namespace makes two entries distinct even though they share a name"
+    );
+    assert_eq!(
+        merged
+            .iter()
+            .find(|attribute| attribute.namespace == Some("color"))
+            .map(|attribute| &attribute.value),
+        Some(&AttributeValue::Text(String::from("blue"))),
+        "the later group still wins within one namespace"
+    );
+}
+
+#[test]
+fn merging_an_appended_group_preserves_the_attributes_for_guarantee() {
+    fn app() -> Element {
+        let meta = use_field_meta_state(FieldMetaValues {
+            id: Some(Rc::from("email")),
+            required: true,
+            ..FieldMetaValues::default()
+        });
+        let merged = dioxus_field::merge_attributes(vec![
+            meta.attributes(),
+            vec![Attribute::new("data-focused", "true", None, false)],
+        ]);
+
+        rsx! {
+            input { ..merged }
+        }
+    }
+
+    let mut dom = VirtualDom::new(app);
+    dom.rebuild_in_place();
+
+    assert_eq!(
+        dioxus_ssr::render(&dom),
+        "<input aria-invalid=\"false\" data-focused=\"true\" data-required=\"true\" id=\"email\" required=true/>",
+        "the merged result is sorted, so it is safe to spread"
+    );
+}

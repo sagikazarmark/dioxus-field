@@ -442,14 +442,10 @@ impl FieldMeta {
     /// The single entry per name guards the neighbouring failure, where a spread carrying one name
     /// twice and dropping to once emits a removal, deleting an attribute the new render still has.
     ///
-    /// Appending a name this vector does not already carry needs only
-    /// `sort_by(|left, right| left.name.cmp(right.name))` afterwards. To *replace* a value the
-    /// metadata supplied, set the matching override on [`FieldControlOptions`] rather than
-    /// appending a second entry — that is what the overrides are for. Controls merging through
-    /// [`merge_attributes`] in `dioxus-primitives` need neither: it sorts and dedupes every list it
-    /// is given.
-    ///
-    /// [`merge_attributes`]: https://docs.rs/dioxus-primitives
+    /// To combine this with a widget's own attributes, pass both to [`merge_attributes`], which
+    /// preserves the guarantee and resolves each name last-wins. To *replace* a value the metadata
+    /// supplied, set the matching override on [`FieldControlOptions`] rather than adding a second
+    /// entry — that is what the overrides are for.
     ///
     /// # Emitted attributes
     ///
@@ -745,6 +741,42 @@ fn push_state(attributes: &mut Vec<Attribute>, name: &'static str, value: bool) 
     if value {
         attributes.push(Attribute::new(name, "true", None, false));
     }
+}
+
+/// Merges ordered attribute groups into one list a widget can spread.
+///
+/// Groups are resolved **last-wins**: where two groups set the same attribute name and namespace,
+/// the later group's value survives. Order the groups from weakest to strongest — for a
+/// field-aware control that is typically the metadata attributes, then the widget's own base
+/// attributes, then its explicit props, then the caller's forwarded attributes.
+///
+/// Passing ordered groups rather than one pre-concatenated list is the point. Concatenating the
+/// metadata and explicit groups before the call moves the widget's base attributes past both, so
+/// base silently outranks an explicit `name` or `required` it was meant to lose to.
+///
+/// The result carries the same guarantee as [`FieldMeta::attributes_for`]: sorted by attribute
+/// name, at most one entry per name and namespace. `dioxus-core` requires the sort of any spread,
+/// and the deduplication keeps a name that appears twice and later drops to once from deleting the
+/// attribute outright.
+///
+/// Widgets already merging through `merge_attributes` in `dioxus-primitives` do not need this; it
+/// resolves groups the same way.
+///
+/// ```rust
+/// # use dioxus_core::Attribute;
+/// # use dioxus_field::merge_attributes;
+/// let merged = merge_attributes(vec![
+///     vec![Attribute::new("name", "from-meta", None, false)],
+///     vec![Attribute::new("name", "from-explicit", None, false)],
+/// ]);
+///
+/// assert_eq!(merged.len(), 1);
+/// ```
+pub fn merge_attributes(groups: Vec<Vec<Attribute>>) -> Vec<Attribute> {
+    let mut attributes = groups.into_iter().flatten().collect::<Vec<_>>();
+    normalize_attributes(&mut attributes);
+
+    attributes
 }
 
 /// Sorts by attribute name and keeps the last entry for each name and namespace.

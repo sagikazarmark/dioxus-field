@@ -4,7 +4,7 @@ use dioxus::prelude::{Props, dioxus_elements, rsx};
 use dioxus_core::{Attribute, Callback, Element, VNode, VirtualDom};
 use dioxus_field::{
     Binding, ChangeOrigin, Field, FieldContext, FieldControlOptions, FieldDescription, FieldError,
-    FieldMeta, FieldMetaValues, FocusRequest,
+    FieldMeta, FieldMetaValues, FocusRequest, merge_attributes,
     testing::{
         ChangeOriginProbe, CommitOrderProbe, FocusRoundTripProbe, OverridableMetaFlags,
         assert_binding_resolution_precedence, assert_field_part_ids, assert_meta_flag_precedence,
@@ -132,16 +132,15 @@ fn ConformingWidget(props: ConformingWidgetProps) -> Element {
         on_commit: Some(Callback::new(move |()| commit_binding.commit())),
     };
 
-    let mut attributes = meta.attributes_for(&options);
+    let mut widget_attributes = Vec::new();
 
     if focused() {
-        attributes.push(Attribute::new("data-focused", "true", None, false));
+        widget_attributes.push(Attribute::new("data-focused", "true", None, false));
     }
 
-    // `attributes_for` returns a sorted list and `dioxus-core` diffs a spread with a sorted
-    // merge-join, so an append has to be sorted back in. Sorting is all this needs:
-    // `data-focused` is a name `attributes_for` never emits, so it cannot duplicate one.
-    attributes.sort_by(|left, right| left.name.cmp(right.name));
+    // Ordered weakest to strongest, so the widget's own attributes win a name the metadata also
+    // set. Merging is what keeps the spread sorted, which `dioxus-core`'s attribute diff requires.
+    let attributes = merge_attributes(vec![meta.attributes_for(&options), widget_attributes]);
 
     rsx! {
         input {

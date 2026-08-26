@@ -90,11 +90,26 @@ what `dioxus-core` requires of any spread — its attribute diff is a sorted mer
 unsorted spread makes a later render drop attributes that did not change. The single entry per name
 guards the neighbouring failure, where a duplicate that drops to one deletes the attribute outright.
 
-Appending a name the vector does not already carry needs only
-`sort_by(|left, right| left.name.cmp(right.name))` afterwards. To replace a value the metadata
-supplied, set the matching override on `FieldControlOptions` instead of appending a second entry.
-Controls merging through `merge_attributes` in `dioxus-primitives` need neither — it sorts and
-dedupes every list it is given.
+To combine that with a widget's own attributes, hand both to `merge_attributes`:
+
+```rust
+use dioxus_field::merge_attributes;
+
+let merged = merge_attributes(vec![
+    meta.attributes_for(&options),
+    base_attributes,
+    explicit_attributes,
+    props.attributes,
+]);
+```
+
+Groups resolve last-wins, ordered weakest to strongest, and the result keeps the sort and the
+one-entry-per-name guarantee. Pass ordered groups rather than one pre-concatenated list: merging the
+metadata into the explicit props before the call moves the widget's base attributes past both, so
+base silently outranks an explicit `name` or `required` it was meant to lose to. To replace a value
+the metadata supplied, set the matching override on `FieldControlOptions` instead of adding a second
+entry. Widgets already merging through `merge_attributes` in `dioxus-primitives` do not need this
+one — it resolves groups the same way.
 
 ## Conformance Testing
 
