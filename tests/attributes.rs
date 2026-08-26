@@ -416,3 +416,30 @@ fn merging_an_appended_group_preserves_the_attributes_for_guarantee() {
         "the merged result is sorted, so it is safe to spread"
     );
 }
+
+#[test]
+fn merging_concatenates_class_instead_of_replacing_it() {
+    let merged = dioxus_field::merge_attributes(vec![
+        vec![Attribute::new("class", "radio radio-primary", None, false)],
+        vec![
+            Attribute::new("class", "mt-2", None, false),
+            Attribute::new("id", "agree", None, false),
+        ],
+    ]);
+
+    assert_eq!(
+        merged
+            .iter()
+            .find(|attribute| attribute.name == "class")
+            .map(|attribute| &attribute.value),
+        Some(&AttributeValue::Text(String::from(
+            "radio radio-primary mt-2"
+        ))),
+        "a widget's own classes must survive a caller's, or spreading silently unstyles the widget"
+    );
+    assert_eq!(
+        merged.len(),
+        2,
+        "concatenating still leaves exactly one class entry"
+    );
+}

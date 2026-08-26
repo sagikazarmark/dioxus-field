@@ -34,7 +34,7 @@ use std::{
 
 use dioxus::prelude::{Props, dioxus_elements, rsx};
 use dioxus_core::{
-    Attribute, Callback, Element, current_scope_id, has_context, provide_context,
+    Attribute, AttributeValue, Callback, Element, current_scope_id, has_context, provide_context,
     try_consume_context, use_hook,
 };
 use dioxus_hooks::{use_effect, use_reactive, use_signal};
@@ -754,13 +754,18 @@ fn push_state(attributes: &mut Vec<Attribute>, name: &'static str, value: bool) 
 /// metadata and explicit groups before the call moves the widget's base attributes past both, so
 /// base silently outranks an explicit `name` or `required` it was meant to lose to.
 ///
+/// `class` is the exception to last-wins: values are **concatenated**, weakest first, so a widget's
+/// own classes survive a caller's. Replacing there would silently unstyle the widget. Every other
+/// name, `style` included, resolves last-wins.
+///
 /// The result carries the same guarantee as [`FieldMeta::attributes_for`]: sorted by attribute
 /// name, at most one entry per name and namespace. `dioxus-core` requires the sort of any spread,
 /// and the deduplication keeps a name that appears twice and later drops to once from deleting the
 /// attribute outright.
 ///
-/// Widgets already merging through `merge_attributes` in `dioxus-primitives` do not need this; it
-/// resolves groups the same way.
+/// Widgets already merging through `merge_attributes` in `dioxus-primitives` do not need this one.
+/// That helper also sorts, deduplicates, and concatenates `class`, so either satisfies the
+/// guarantee — but they are separate implementations, so do not assume they agree on every detail.
 ///
 /// ```rust
 /// # use dioxus_core::Attribute;
@@ -796,6 +801,15 @@ fn normalize_attributes(attributes: &mut Vec<Attribute>) {
         let duplicate = later.name == earlier.name && later.namespace == earlier.namespace;
 
         if duplicate {
+            if let ("class", AttributeValue::Text(kept), AttributeValue::Text(dropped)) =
+                (later.name, &later.value, &earlier.value)
+            {
+                // Classes compose rather than replace: a widget's own classes and a caller's are
+                // both meant to apply, and last-wins here would silently unstyle the widget.
+                let combined = format!("{dropped} {kept}");
+                later.value = AttributeValue::Text(combined);
+            }
+
             std::mem::swap(later, earlier);
         }
 
