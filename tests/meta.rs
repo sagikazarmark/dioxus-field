@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use dioxus::prelude::*;
 use dioxus_core::AttributeValue;
-use dioxus_field::{FieldMetaOverrides, FieldMetaValues, FocusRequest, use_field_meta_state};
+use dioxus_field::{FieldControlOptions, FieldMetaValues, FocusRequest, use_field_meta_state};
 
 fn attribute_text(attributes: &[Attribute], name: &str) -> Option<String> {
     attributes
@@ -35,12 +35,13 @@ fn field_meta_attributes_derive_accessibility_and_state_with_flag_overrides() {
         let _description = meta.register_description_id(Rc::from("email-help"));
         let _error = meta.register_error_id(Rc::from("email-error"));
 
-        attributes
-            .borrow_mut()
-            .extend(meta.attributes_with(FieldMetaOverrides {
-                invalid: Some(false),
-                disabled: Some(false),
-            }));
+        attributes.borrow_mut().extend(
+            meta.attributes_for(
+                &FieldControlOptions::new()
+                    .invalid(Some(false))
+                    .disabled(Some(false)),
+            ),
+        );
 
         VNode::empty()
     }

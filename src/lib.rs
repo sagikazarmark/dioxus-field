@@ -25,11 +25,17 @@
 //! }
 //! ```
 
-use std::{any::Any, cell::RefCell, fmt, rc::Rc};
+use std::{
+    any::Any,
+    cell::{Cell, RefCell},
+    fmt,
+    rc::Rc,
+};
 
 use dioxus::prelude::{Props, dioxus_elements, rsx};
 use dioxus_core::{
-    Attribute, Callback, Element, has_context, provide_context, try_consume_context, use_hook,
+    Attribute, AttributeValue, Callback, Element, current_scope_id, has_context, provide_context,
+    try_consume_context, use_hook,
 };
 use dioxus_hooks::{use_effect, use_reactive, use_signal};
 use dioxus_signals::{ReadSignal, ReadableExt, Signal, WritableExt};
@@ -64,13 +70,206 @@ pub struct FieldMetaValues {
     pub dirty: bool,
 }
 
-/// Per-use overrides applied while deriving field attributes or rendering a field part.
+/// Explicit state that wins over the resolved metadata's own state.
+///
+/// This is the whole override set for a field part, and the state subset of the control path
+/// carried by [`FieldControlOptions`]. A `None` field defers to the metadata.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct FieldMetaOverrides {
+pub struct FieldStateOverrides {
     /// Overrides the metadata's invalid state when present.
     pub invalid: Option<bool>,
     /// Overrides the metadata's disabled state when present.
     pub disabled: Option<bool>,
+    /// Overrides the metadata's required state when present.
+    pub required: Option<bool>,
+}
+
+/// How one rendered element spells a field attribute that has both a native and an ARIA form.
+///
+/// The question this answers is *attribute applicability* — does this element accept this
+/// attribute — not which accessibility spelling reads better. Only the widget knows the element it
+/// renders and the role that element carries, so the widget supplies it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum AttributeSurface {
+    /// Emit the native HTML attribute, such as `required` or `disabled`.
+    #[default]
+    Native,
+    /// Emit the ARIA attribute, such as `aria-required` or `aria-disabled`.
+    Aria,
+    /// Emit neither spelling.
+    ///
+    /// Use this where the attribute is invalid on the rendered element and no ARIA spelling
+    /// applies to its role either.
+    Omit,
+}
+
+/// How one rendered element exposes validity.
+///
+/// Validity has no native spelling, so this axis has no `Native` variant. It gates `aria-invalid`
+/// and `aria-errormessage` together, since a validity reference without a validity state is not
+/// meaningful.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ValiditySurface {
+    /// Emit `aria-invalid`, and `aria-errormessage` while invalid.
+    #[default]
+    Aria,
+    /// Emit neither, for roles where `aria-invalid` is unsupported or deprecated.
+    Omit,
+}
+
+/// Whether one rendered element accepts the `name` attribute.
+///
+/// `name` has no ARIA spelling, so this axis has no `Aria` variant.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum NameSurface {
+    /// Emit `name`.
+    #[default]
+    Native,
+    /// Emit nothing.
+    ///
+    /// Controls rooted on a `div` need this: `name` is not a valid attribute there, and such
+    /// controls do not participate in native form submission.
+    Omit,
+}
+
+/// How one rendered element spells its field state, one axis per attribute.
+///
+/// The axes are independent because their validity lattices disagree pairwise: native `disabled`
+/// is legal on a `button` where native `required` is not, and `aria-invalid` is unsupported on
+/// some roles where `aria-disabled` is fine. A single index over all of them cannot describe any
+/// element correctly.
+///
+/// The `data-*` state attributes are outside this type. They are valid on every element, so
+/// [`FieldMeta::attributes_for`] always emits them regardless of the surface — an `Omit` axis
+/// suppresses only the attribute the element cannot carry, never the styling hook.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FieldSurface {
+    /// How the element spells its required state.
+    pub required: AttributeSurface,
+    /// How the element spells its disabled state.
+    pub disabled: AttributeSurface,
+    /// How the element spells its validity.
+    pub validity: ValiditySurface,
+    /// Whether the element carries a `name`.
+    pub name: NameSurface,
+}
+
+impl FieldSurface {
+    /// `input`, `textarea`, and `select` — every axis that *has* a native spelling uses it, and
+    /// this is the default. Validity stays ARIA, since no element spells validity natively.
+    pub const NATIVE: Self = Self {
+        required: AttributeSurface::Native,
+        disabled: AttributeSurface::Native,
+        validity: ValiditySurface::Aria,
+        name: NameSurface::Native,
+    };
+
+    /// `button[role=checkbox|switch]` — native `disabled` and `name` are legal on a `button`,
+    /// native `required` is not.
+    pub const BUTTON_WIDGET: Self = Self {
+        required: AttributeSurface::Aria,
+        disabled: AttributeSurface::Native,
+        validity: ValiditySurface::Aria,
+        name: NameSurface::Native,
+    };
+
+    /// `div[role=radiogroup]` — no native attribute applies, and a `div` carries no `name`.
+    ///
+    /// A control rooted on `role=group` should start here and set `validity` to
+    /// [`ValiditySurface::Omit`], since `aria-invalid` is deprecated on that role.
+    pub const ARIA_WIDGET: Self = Self {
+        required: AttributeSurface::Aria,
+        disabled: AttributeSurface::Aria,
+        validity: ValiditySurface::Aria,
+        name: NameSurface::Omit,
+    };
+}
+
+/// Everything a field-aware control tells [`FieldMeta::attributes_for`] about itself.
+///
+/// Overrides are resolved before any attribute is built, so an overridden state is never emitted
+/// twice and never has to be filtered back out of the result.
+///
+/// ```rust
+/// # use std::rc::Rc;
+/// # use dioxus_field::{FieldControlOptions, FieldSurface};
+/// let options = FieldControlOptions::new()
+///     .required(Some(true))
+///     .name(Some(Rc::from("terms")))
+///     .surface(FieldSurface::BUTTON_WIDGET);
+/// ```
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FieldControlOptions {
+    state: FieldStateOverrides,
+    id: Option<Rc<str>>,
+    name: Option<Rc<str>>,
+    surface: FieldSurface,
+}
+
+impl FieldControlOptions {
+    /// Creates options that override nothing and render onto [`FieldSurface::NATIVE`].
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Replaces the whole state override set.
+    #[must_use]
+    pub fn state(mut self, state: FieldStateOverrides) -> Self {
+        self.state = state;
+        self
+    }
+
+    /// Overrides the metadata's invalid state.
+    #[must_use]
+    pub fn invalid(mut self, invalid: Option<bool>) -> Self {
+        self.state.invalid = invalid;
+        self
+    }
+
+    /// Overrides the metadata's disabled state.
+    #[must_use]
+    pub fn disabled(mut self, disabled: Option<bool>) -> Self {
+        self.state.disabled = disabled;
+        self
+    }
+
+    /// Overrides the metadata's required state.
+    #[must_use]
+    pub fn required(mut self, required: Option<bool>) -> Self {
+        self.state.required = required;
+        self
+    }
+
+    /// Overrides the metadata's control id.
+    ///
+    /// This replaces the emitted value; it does not suppress the attribute. `id` is a global
+    /// attribute, so there is no element that must not carry one.
+    #[must_use]
+    pub fn id(mut self, id: Option<Rc<str>>) -> Self {
+        self.id = id;
+        self
+    }
+
+    /// Overrides the metadata's control name.
+    ///
+    /// This replaces the emitted value. To suppress the attribute on an element that cannot carry
+    /// it, set [`FieldSurface::name`] to [`NameSurface::Omit`] instead.
+    #[must_use]
+    pub fn name(mut self, name: Option<Rc<str>>) -> Self {
+        self.name = name;
+        self
+    }
+
+    /// Declares how the rendered element spells each field attribute.
+    #[must_use]
+    pub fn surface(mut self, surface: FieldSurface) -> Self {
+        self.surface = surface;
+        self
+    }
 }
 
 /// Signal-backed presentation metadata for one field-shaped value.
@@ -80,6 +279,7 @@ pub struct FieldMetaOverrides {
 #[derive(Clone, Copy, PartialEq)]
 pub struct FieldMeta {
     id: Signal<Option<Rc<str>>>,
+    fallback_id: Signal<Rc<str>>,
     name: Signal<Option<Rc<str>>>,
     required: Signal<bool>,
     disabled: Signal<bool>,
@@ -92,8 +292,14 @@ pub struct FieldMeta {
 
 impl fmt::Debug for FieldMeta {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let id = self
+            .id
+            .peek()
+            .clone()
+            .unwrap_or_else(|| self.fallback_id.peek().clone());
+
         f.debug_struct("FieldMeta")
-            .field("id", &*self.id.peek())
+            .field("id", &id)
             .field("name", &*self.name.peek())
             .field("required", &*self.required.peek())
             .field("disabled", &*self.disabled.peek())
@@ -107,11 +313,16 @@ impl fmt::Debug for FieldMeta {
 
 impl FieldMeta {
     /// Returns the rendered control id.
-    pub fn id(&self) -> Option<Rc<str>> {
-        (self.id)()
+    ///
+    /// Metadata always carries an id. When its producer supplies none,
+    /// [`use_field_meta_state`] generates one that is stable for the owning scope's lifetime, so
+    /// [`Label`]'s `for`, `aria-labelledby`, `aria-describedby`, and `aria-errormessage` all
+    /// resolve instead of silently leaving the control unnamed.
+    pub fn id(&self) -> Rc<str> {
+        (self.id)().unwrap_or_else(|| (self.fallback_id)())
     }
 
-    /// Replaces the rendered control id.
+    /// Replaces the rendered control id, or restores the generated fallback with `None`.
     pub fn set_id(&mut self, id: Option<Rc<str>>) {
         self.id.set(id);
     }
@@ -188,6 +399,15 @@ impl FieldMeta {
         self.dirty.set(dirty);
     }
 
+    /// Registers a label element id until the returned registration is dropped.
+    ///
+    /// Registered label ids reach the control through `aria-labelledby`, which is the only naming
+    /// path available to a control rooted on an element `<label for>` cannot address.
+    #[must_use]
+    pub fn register_label_id(&mut self, id: Rc<str>) -> FieldMetaIdRegistration {
+        self.register_id(RegisteredIdKind::Label, id)
+    }
+
     /// Registers a description element id until the returned registration is dropped.
     #[must_use]
     pub fn register_description_id(&mut self, id: Rc<str>) -> FieldMetaIdRegistration {
@@ -200,39 +420,109 @@ impl FieldMeta {
         self.register_id(RegisteredIdKind::Error, id)
     }
 
-    /// Returns attributes for a rendered control using the metadata's flag states.
+    /// Returns attributes for a rendered control using the metadata's own state, on a
+    /// [`FieldSurface::NATIVE`] element.
     pub fn attributes(&self) -> Vec<Attribute> {
-        self.attributes_with(FieldMetaOverrides::default())
+        self.attributes_for(&FieldControlOptions::default())
     }
 
-    /// Returns attributes for a rendered control, applying per-flag explicit overrides.
-    pub fn attributes_with(&self, overrides: FieldMetaOverrides) -> Vec<Attribute> {
-        let invalid = overrides.invalid.unwrap_or_else(|| self.invalid());
-        let disabled = overrides.disabled.unwrap_or_else(|| self.disabled());
+    /// Returns attributes for a rendered control, resolving explicit overrides and the element's
+    /// attribute surface.
+    ///
+    /// Overrides are resolved first and only the resolved state is emitted, so the caller never
+    /// filters the result and no attribute appears twice.
+    ///
+    /// # Guarantees
+    ///
+    /// The returned vector is **sorted by attribute name** and carries at most one entry per
+    /// attribute name and namespace.
+    ///
+    /// The sort is what `dioxus-core` requires of any spread list: its attribute diff is a sorted
+    /// merge-join, so an unsorted list makes a later render drop attributes that did not change.
+    /// The single entry per name guards the neighbouring failure, where a spread carrying one name
+    /// twice and dropping to once emits a removal, deleting an attribute the new render still has.
+    ///
+    /// To combine this with a widget's own attributes, pass both to [`merge_attributes`], which
+    /// preserves the guarantee and resolves each name last-wins. To *replace* a value the metadata
+    /// supplied, set the matching override on [`FieldControlOptions`] rather than adding a second
+    /// entry — that is what the overrides are for.
+    ///
+    /// # Emitted attributes
+    ///
+    /// - `id`, always, from the override or the metadata.
+    /// - `name`, when [`FieldSurface::name`] is [`NameSurface::Native`] and a name resolves.
+    /// - `required` or `aria-required="true"`, when required, per [`FieldSurface::required`].
+    /// - `disabled` or `aria-disabled="true"`, when disabled, per [`FieldSurface::disabled`].
+    /// - `aria-invalid`, and `aria-errormessage` while invalid, per [`FieldSurface::validity`].
+    ///   `aria-errormessage` takes a single IDREF in ARIA 1.2, so it references only the first
+    ///   mounted error part; every error id also reaches `aria-describedby` while invalid.
+    /// - `aria-labelledby` and `aria-describedby`, from the currently mounted parts. Both are
+    ///   legal on every role in play, so neither has a surface axis.
+    /// - `data-required`, `data-disabled`, `data-invalid`, `data-touched`, and `data-dirty`, from
+    ///   the resolved state, absent when false and independent of the surface.
+    pub fn attributes_for(&self, options: &FieldControlOptions) -> Vec<Attribute> {
+        let required = options.state.required.unwrap_or_else(|| self.required());
+        let disabled = options.state.disabled.unwrap_or_else(|| self.disabled());
+        let invalid = options.state.invalid.unwrap_or_else(|| self.invalid());
+        let id = options.id.clone().unwrap_or_else(|| self.id());
+        let name = options.name.clone().or_else(|| self.name());
         let registered_ids = (self.registered_ids)();
-        let description_ids = registered_ids.joined(RegisteredIdKind::Description);
-        let error_ids = registered_ids.joined(RegisteredIdKind::Error);
+        let error_ids = registered_ids.ids(RegisteredIdKind::Error);
+        let mut described_by = registered_ids.ids(RegisteredIdKind::Description);
+        if invalid {
+            described_by.extend(error_ids.iter().cloned());
+        }
         let mut attributes = Vec::new();
 
-        push_optional_text(&mut attributes, "id", self.id());
-        push_optional_text(&mut attributes, "name", self.name());
-        push_bool(&mut attributes, "required", self.required());
-        push_bool(&mut attributes, "disabled", disabled);
-        attributes.push(Attribute::new(
-            "aria-invalid",
-            invalid.to_string(),
-            None,
-            false,
-        ));
-        push_optional_text(&mut attributes, "aria-describedby", description_ids);
-        if invalid {
-            push_optional_text(&mut attributes, "aria-errormessage", error_ids);
+        attributes.push(Attribute::new("id", id.to_string(), None, false));
+
+        if options.surface.name == NameSurface::Native {
+            push_optional_text(&mut attributes, "name", name);
         }
-        push_data_state(&mut attributes, "data-required", self.required());
-        push_data_state(&mut attributes, "data-disabled", disabled);
-        push_data_state(&mut attributes, "data-invalid", invalid);
-        push_data_state(&mut attributes, "data-touched", self.touched());
-        push_data_state(&mut attributes, "data-dirty", self.dirty());
+
+        push_surface_state(
+            &mut attributes,
+            options.surface.required,
+            ("required", "aria-required"),
+            required,
+        );
+        push_surface_state(
+            &mut attributes,
+            options.surface.disabled,
+            ("disabled", "aria-disabled"),
+            disabled,
+        );
+
+        if options.surface.validity == ValiditySurface::Aria {
+            attributes.push(Attribute::new(
+                "aria-invalid",
+                invalid.to_string(),
+                None,
+                false,
+            ));
+            if invalid {
+                push_optional_text(
+                    &mut attributes,
+                    "aria-errormessage",
+                    error_ids.first().cloned(),
+                );
+            }
+        }
+
+        push_optional_text(
+            &mut attributes,
+            "aria-labelledby",
+            join_ids(&registered_ids.ids(RegisteredIdKind::Label)),
+        );
+        push_optional_text(&mut attributes, "aria-describedby", join_ids(&described_by));
+
+        push_state(&mut attributes, "data-required", required);
+        push_state(&mut attributes, "data-disabled", disabled);
+        push_state(&mut attributes, "data-invalid", invalid);
+        push_state(&mut attributes, "data-touched", self.touched());
+        push_state(&mut attributes, "data-dirty", self.dirty());
+
+        normalize_attributes(&mut attributes);
 
         attributes
     }
@@ -276,6 +566,10 @@ impl FieldMeta {
 }
 
 /// Creates signal-backed field metadata owned by the current component scope.
+///
+/// When `initial.id` is `None`, the metadata falls back to an id generated for this hook, stable
+/// for the owning scope's lifetime. Setting the id back to `None` later restores that fallback, so
+/// a control resolved through this metadata always has an id to be labelled and described by.
 pub fn use_field_meta_state(initial: FieldMetaValues) -> FieldMeta {
     let FieldMetaValues {
         id,
@@ -290,6 +584,7 @@ pub fn use_field_meta_state(initial: FieldMetaValues) -> FieldMeta {
 
     FieldMeta {
         id: use_signal(|| id),
+        fallback_id: use_signal(|| generated_id("field")),
         name: use_signal(|| name),
         required: use_signal(|| required),
         disabled: use_signal(|| disabled),
@@ -334,6 +629,7 @@ impl Drop for FieldMetaIdRegistration {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RegisteredIdKind {
+    Label,
     Description,
     Error,
 }
@@ -353,16 +649,52 @@ impl RegisteredIds {
         token
     }
 
-    fn joined(&self, kind: RegisteredIdKind) -> Option<Rc<str>> {
-        let ids = self
-            .entries
+    /// Returns the ids of one kind in registration order, which is the order ARIA id references
+    /// are rendered in.
+    fn ids(&self, kind: RegisteredIdKind) -> Vec<Rc<str>> {
+        self.entries
             .iter()
             .filter(|entry| entry.kind == kind)
-            .map(|entry| entry.id.as_ref())
-            .collect::<Vec<_>>();
-
-        (!ids.is_empty()).then(|| Rc::from(ids.join(" ")))
+            .map(|entry| Rc::clone(&entry.id))
+            .collect()
     }
+}
+
+fn join_ids(ids: &[Rc<str>]) -> Option<Rc<str>> {
+    (!ids.is_empty()).then(|| {
+        Rc::from(
+            ids.iter()
+                .map(AsRef::as_ref)
+                .collect::<Vec<_>>()
+                .join(" ")
+                .as_str(),
+        )
+    })
+}
+
+/// A per-scope counter that keeps generated ids unique within one component.
+#[derive(Clone)]
+struct GeneratedIdCounter(Rc<Cell<u64>>);
+
+/// Generates an id unique to the calling scope and to this call's position within it.
+///
+/// Call this only from a hook initializer so the value is computed once and stays stable for the
+/// scope's lifetime. The counter lives in the scope's own context, which keeps generated ids
+/// deterministic for a given [`dioxus_core::VirtualDom`] rather than dependent on global state.
+fn generated_id(prefix: &str) -> Rc<str> {
+    let counter = has_context::<GeneratedIdCounter>()
+        .unwrap_or_else(|| provide_context(GeneratedIdCounter(Rc::new(Cell::new(0)))));
+    let index = counter.0.get();
+    counter.0.set(index + 1);
+
+    Rc::from(format!("dxf-{prefix}-{}-{index}", current_scope_id().0).as_str())
+}
+
+/// Resolves a field part's own element id, generating a stable one when the caller supplies none.
+fn use_part_id(explicit: Option<Rc<str>>, prefix: &'static str) -> Rc<str> {
+    let generated = use_hook(|| generated_id(prefix));
+
+    explicit.unwrap_or(generated)
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -384,10 +716,105 @@ fn push_bool(attributes: &mut Vec<Attribute>, name: &'static str, value: bool) {
     }
 }
 
-fn push_data_state(attributes: &mut Vec<Attribute>, name: &'static str, value: bool) {
+/// Pushes one state in the spelling its surface calls for, and nothing when `value` is false.
+///
+/// The native spelling is a boolean attribute; the ARIA one is `="true"`. Both are absent when
+/// false, so a selector never has to distinguish `false` from unset.
+fn push_surface_state(
+    attributes: &mut Vec<Attribute>,
+    surface: AttributeSurface,
+    (native, aria): (&'static str, &'static str),
+    value: bool,
+) {
+    match surface {
+        AttributeSurface::Native => push_bool(attributes, native, value),
+        AttributeSurface::Aria => push_state(attributes, aria, value),
+        AttributeSurface::Omit => {}
+    }
+}
+
+/// Pushes `name="true"` when `value`, and nothing otherwise.
+///
+/// Both the `data-*` state attributes and the ARIA states this crate emits use the same
+/// absent-when-false convention, so a selector never has to distinguish `false` from unset.
+fn push_state(attributes: &mut Vec<Attribute>, name: &'static str, value: bool) {
     if value {
         attributes.push(Attribute::new(name, "true", None, false));
     }
+}
+
+/// Merges ordered attribute groups into one list a widget can spread.
+///
+/// Groups are resolved **last-wins**: where two groups set the same attribute name and namespace,
+/// the later group's value survives. Order the groups from weakest to strongest — for a
+/// field-aware control that is typically the metadata attributes, then the widget's own base
+/// attributes, then its explicit props, then the caller's forwarded attributes.
+///
+/// Passing ordered groups rather than one pre-concatenated list is the point. Concatenating the
+/// metadata and explicit groups before the call moves the widget's base attributes past both, so
+/// base silently outranks an explicit `name` or `required` it was meant to lose to.
+///
+/// `class` is the exception to last-wins: values are **concatenated**, weakest first, so a widget's
+/// own classes survive a caller's. Replacing there would silently unstyle the widget. Every other
+/// name, `style` included, resolves last-wins.
+///
+/// The result carries the same guarantee as [`FieldMeta::attributes_for`]: sorted by attribute
+/// name, at most one entry per name and namespace. `dioxus-core` requires the sort of any spread,
+/// and the deduplication keeps a name that appears twice and later drops to once from deleting the
+/// attribute outright.
+///
+/// Widgets already merging through `merge_attributes` in `dioxus-primitives` do not need this one.
+/// That helper also sorts, deduplicates, and concatenates `class`, so either satisfies the
+/// guarantee — but they are separate implementations, so do not assume they agree on every detail.
+///
+/// ```rust
+/// # use dioxus_core::Attribute;
+/// # use dioxus_field::merge_attributes;
+/// let merged = merge_attributes(vec![
+///     vec![Attribute::new("name", "from-meta", None, false)],
+///     vec![Attribute::new("name", "from-explicit", None, false)],
+/// ]);
+///
+/// assert_eq!(merged.len(), 1);
+/// ```
+pub fn merge_attributes(groups: Vec<Vec<Attribute>>) -> Vec<Attribute> {
+    let mut attributes = groups.into_iter().flatten().collect::<Vec<_>>();
+    normalize_attributes(&mut attributes);
+
+    attributes
+}
+
+/// Sorts by attribute name and keeps the last entry for each name and namespace.
+///
+/// `dioxus-core` diffs a spread attribute list with a sorted merge-join keyed on the attribute
+/// name, so an unsorted or duplicated list makes the next render emit removals for attributes that
+/// are still present. Every list this crate hands to `rsx!` passes through here, including after
+/// caller attributes are appended — appending last is what makes a caller's attribute win its
+/// name.
+fn normalize_attributes(attributes: &mut Vec<Attribute>) {
+    attributes.sort_by(|left, right| {
+        left.name
+            .cmp(right.name)
+            .then_with(|| left.namespace.cmp(&right.namespace))
+    });
+    attributes.dedup_by(|later, earlier| {
+        let duplicate = later.name == earlier.name && later.namespace == earlier.namespace;
+
+        if duplicate {
+            if let ("class", AttributeValue::Text(kept), AttributeValue::Text(dropped)) =
+                (later.name, &later.value, &earlier.value)
+            {
+                // Classes compose rather than replace: a widget's own classes and a caller's are
+                // both meant to apply, and last-wins here would silently unstyle the widget.
+                let combined = format!("{dropped} {kept}");
+                later.value = AttributeValue::Text(combined);
+            }
+
+            std::mem::swap(later, earlier);
+        }
+
+        duplicate
+    });
 }
 
 /// Describes whether a value write came from user interaction or application code.
@@ -850,11 +1277,32 @@ pub fn use_binding<T: 'static>(explicit: Option<Binding<T>>, default: T) -> Bind
 /// The standalone state hook is always called so the source can change between renders without
 /// violating Dioxus's hook ordering rules.
 pub fn use_field_meta(explicit: Option<FieldMeta>) -> FieldMeta {
+    use_resolved_field_meta(explicit.as_ref()).0
+}
+
+/// Where a part's resolved metadata came from.
+///
+/// A part that renders a reference *to a control* needs this: an id resolved from metadata nobody
+/// else holds addresses no rendered element, so the reference would dangle.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FieldMetaSource {
+    /// An explicit prop or the Field Context. A control may hold the same metadata, and if the
+    /// caller passed it deliberately, one is meant to.
+    Shared,
+    /// This part's own standalone state, which by construction no control is reading.
+    Standalone,
+}
+
+/// Resolves metadata as [`use_field_meta`] does, and reports which source won.
+fn use_resolved_field_meta(explicit: Option<&FieldMeta>) -> (FieldMeta, FieldMetaSource) {
     let internal = use_field_meta_state(FieldMetaValues::default());
 
     explicit
+        .copied()
         .or_else(|| try_consume_context::<FieldContext>().and_then(|context| context.meta()))
-        .unwrap_or(internal)
+        .map_or((internal, FieldMetaSource::Standalone), |meta| {
+            (meta, FieldMetaSource::Shared)
+        })
 }
 
 /// Resolves the current [`FocusRequest`], or creates a standalone slot when no context exists.
@@ -866,6 +1314,23 @@ pub fn use_focus_request() -> FocusRequest {
 
 /// Registers a widget focus callback with the resolved [`FocusRequest`] for this component's
 /// lifetime.
+///
+/// # The callback must be render-stable
+///
+/// Pass a callback whose identity survives a re-render — [`dioxus_hooks::use_callback`] produces
+/// one. [`Callback::new`] does not: it allocates a fresh generational box per call and compares by
+/// pointer identity, so calling it in a component body re-registers on **every** render. One slot
+/// is shared by the whole field, so a widget that re-registers steals the slot from a sibling
+/// widget that legitimately owns it, and focus ownership ends up decided by render recency rather
+/// than by structure. Each re-registration also leaks a generational box until the component
+/// unmounts.
+///
+/// # Which element to register
+///
+/// Register the element that actually receives focus, and let the callback do nothing when that
+/// element cannot take focus — a disabled control should not move focus at all. Never focus a
+/// proxy element and never blur: both hand the user's focus to something they did not ask for,
+/// and `HTMLElement.focus()` reports success either way, so nothing downstream can detect it.
 pub fn use_focus_registration(callback: Callback<()>) -> FocusRequest {
     let request = use_focus_request();
     let active = use_hook(|| Rc::new(RefCell::new(None::<ActiveFocusRegistration>)));
@@ -902,6 +1367,9 @@ pub struct FieldProps {
     #[props(into)]
     pub context: FieldContext,
     /// Attributes forwarded to the rendered `div`.
+    ///
+    /// Sorted by attribute name and deduplicated with the part's own, which `dioxus-core` requires
+    /// of any spread list. A forwarded attribute wins its name.
     #[props(extends = GlobalAttributes)]
     pub attributes: Vec<Attribute>,
     /// Field content.
@@ -936,15 +1404,25 @@ pub fn Field(props: FieldProps) -> Element {
 
     let focus_request = use_hook(|| context.focus_request());
     provide_context(context.with_focus_request(focus_request));
+    let mut attributes = props.attributes;
+    normalize_attributes(&mut attributes);
 
     rsx! {
-        div { ..props.attributes, {props.children} }
+        div { ..attributes, {props.children} }
     }
 }
 
 /// Props for the headless [`Label`] part.
 #[derive(Clone, Debug, Props, PartialEq)]
 pub struct LabelProps {
+    /// The rendered `label`'s own id, registered with the resolved metadata for this part's
+    /// lifetime. Defaults to a generated id.
+    ///
+    /// The control reaches this id through `aria-labelledby`, which is the only naming path
+    /// available to a control rooted on an element `<label for>` cannot address — `for` requires a
+    /// labelable element, and widgets rooted on a `div` are not one.
+    #[props(default)]
+    pub id: Option<Rc<str>>,
     /// Explicit metadata, which wins over Field Context metadata.
     #[props(default)]
     pub meta: Option<FieldMeta>,
@@ -954,7 +1432,13 @@ pub struct LabelProps {
     /// Explicit disabled state, which wins over the metadata state.
     #[props(default)]
     pub disabled: Option<bool>,
+    /// Explicit required state, which wins over the metadata state.
+    #[props(default)]
+    pub required: Option<bool>,
     /// Attributes forwarded to the rendered `label`.
+    ///
+    /// Sorted by attribute name and deduplicated with the part's own, which `dioxus-core` requires
+    /// of any spread list. A forwarded attribute wins its name.
     #[props(extends = GlobalAttributes)]
     pub attributes: Vec<Attribute>,
     /// Label content.
@@ -964,25 +1448,33 @@ pub struct LabelProps {
 /// Renders an unstyled `label` associated with the resolved metadata's control id.
 ///
 /// This part can resolve metadata from Field Context, accept it explicitly, or run standalone.
+/// Running standalone means no control shares the metadata, so no `for` is emitted — the label
+/// still carries its own id, which is the reference a control would reach through
+/// `aria-labelledby`.
 #[allow(non_snake_case)]
 #[allow(
     clippy::missing_errors_doc,
     reason = "Dioxus Element uses Result as its renderer protocol"
 )]
 pub fn Label(props: LabelProps) -> Element {
-    let meta = use_field_meta(props.meta);
-    let control_id = meta.id().map(|id| id.to_string());
-    let mut attributes = part_state_attributes(
+    let (meta, source) = use_resolved_field_meta(props.meta.as_ref());
+    let id = use_part_id(props.id, "label");
+    use_field_meta_id_registration(&meta, RegisteredIdKind::Label, Rc::clone(&id));
+    // Metadata the label resolved for itself alone addresses no rendered control, so pointing
+    // `for` at its generated id would dangle. Emitting nothing is what 0.1.0 did, and is honest.
+    let control_id = (source == FieldMetaSource::Shared).then(|| meta.id().to_string());
+    let attributes = part_attributes(
         &meta,
-        FieldMetaOverrides {
+        FieldStateOverrides {
             invalid: props.invalid,
             disabled: props.disabled,
+            required: props.required,
         },
+        props.attributes,
     );
-    attributes.extend(props.attributes);
 
     rsx! {
-        label { r#for: control_id, ..attributes, {props.children} }
+        label { id: id.to_string(), r#for: control_id, ..attributes, {props.children} }
     }
 }
 
@@ -1001,7 +1493,13 @@ pub struct FieldDescriptionProps {
     /// Explicit disabled state, which wins over the metadata state.
     #[props(default)]
     pub disabled: Option<bool>,
+    /// Explicit required state, which wins over the metadata state.
+    #[props(default)]
+    pub required: Option<bool>,
     /// Attributes forwarded to the rendered description `div`.
+    ///
+    /// Sorted by attribute name and deduplicated with the part's own, which `dioxus-core` requires
+    /// of any spread list. A forwarded attribute wins its name.
     #[props(extends = GlobalAttributes)]
     pub attributes: Vec<Attribute>,
     /// Description content.
@@ -1020,14 +1518,15 @@ pub fn FieldDescription(props: FieldDescriptionProps) -> Element {
     let meta = use_field_meta(props.meta);
     use_field_meta_id_registration(&meta, RegisteredIdKind::Description, props.id.clone());
     let id = props.id.to_string();
-    let mut attributes = part_state_attributes(
+    let attributes = part_attributes(
         &meta,
-        FieldMetaOverrides {
+        FieldStateOverrides {
             invalid: props.invalid,
             disabled: props.disabled,
+            required: props.required,
         },
+        props.attributes,
     );
-    attributes.extend(props.attributes);
 
     rsx! {
         div { id: id, ..attributes, {props.children} }
@@ -1049,12 +1548,22 @@ pub struct FieldErrorProps {
     /// Explicit disabled state used by data-state attributes.
     #[props(default)]
     pub disabled: Option<bool>,
+    /// Explicit required state used by data-state attributes.
+    #[props(default)]
+    pub required: Option<bool>,
     /// Attributes forwarded to the rendered error `div`.
+    ///
+    /// Sorted by attribute name and deduplicated with the part's own, which `dioxus-core` requires
+    /// of any spread list. A forwarded attribute wins its name.
     #[props(extends = GlobalAttributes)]
     pub attributes: Vec<Attribute>,
 }
 
-/// Renders pre-formatted field errors in an unstyled polite live region while invalid.
+/// Renders pre-formatted field errors in an unstyled polite live region, one element per error.
+///
+/// The live region stays mounted while the field is valid, holding no children. A live region that
+/// enters the accessibility tree in the same update as its content is not announced reliably, so
+/// the region has to exist before the first error arrives.
 ///
 /// This part can resolve metadata from Field Context, accept it explicitly, or run standalone.
 #[allow(non_snake_case)]
@@ -1066,47 +1575,52 @@ pub fn FieldError(props: FieldErrorProps) -> Element {
     let meta = use_field_meta(props.meta);
     use_field_meta_id_registration(&meta, RegisteredIdKind::Error, props.id.clone());
     let invalid = props.invalid.unwrap_or_else(|| meta.invalid());
-
-    if !invalid {
-        return dioxus_core::VNode::empty();
-    }
-
     let id = props.id.to_string();
-    let errors = meta
-        .errors()
-        .iter()
-        .map(AsRef::as_ref)
-        .collect::<Vec<_>>()
-        .join("\n");
-    let mut attributes = part_state_attributes(
+    let errors = if invalid { meta.errors() } else { Vec::new() };
+    let attributes = part_attributes(
         &meta,
-        FieldMetaOverrides {
+        FieldStateOverrides {
             invalid: props.invalid,
             disabled: props.disabled,
+            required: props.required,
         },
+        props.attributes,
     );
-    attributes.extend(props.attributes);
 
     rsx! {
         div {
             id: id,
             aria_live: "polite",
             ..attributes,
-            {errors}
+            for error in errors {
+                div { "{error}" }
+            }
         }
     }
 }
 
-fn part_state_attributes(meta: &FieldMeta, overrides: FieldMetaOverrides) -> Vec<Attribute> {
-    let invalid = overrides.invalid.unwrap_or_else(|| meta.invalid());
+/// Builds a field part's `data-*` state attributes and appends the caller's forwarded ones.
+///
+/// Forwarded attributes go last, so a caller's attribute wins its name once
+/// [`normalize_attributes`] resolves the result.
+fn part_attributes(
+    meta: &FieldMeta,
+    overrides: FieldStateOverrides,
+    forwarded: Vec<Attribute>,
+) -> Vec<Attribute> {
+    let required = overrides.required.unwrap_or_else(|| meta.required());
     let disabled = overrides.disabled.unwrap_or_else(|| meta.disabled());
+    let invalid = overrides.invalid.unwrap_or_else(|| meta.invalid());
     let mut attributes = Vec::new();
 
-    push_data_state(&mut attributes, "data-required", meta.required());
-    push_data_state(&mut attributes, "data-disabled", disabled);
-    push_data_state(&mut attributes, "data-invalid", invalid);
-    push_data_state(&mut attributes, "data-touched", meta.touched());
-    push_data_state(&mut attributes, "data-dirty", meta.dirty());
+    push_state(&mut attributes, "data-required", required);
+    push_state(&mut attributes, "data-disabled", disabled);
+    push_state(&mut attributes, "data-invalid", invalid);
+    push_state(&mut attributes, "data-touched", meta.touched());
+    push_state(&mut attributes, "data-dirty", meta.dirty());
+
+    attributes.extend(forwarded);
+    normalize_attributes(&mut attributes);
 
     attributes
 }

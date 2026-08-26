@@ -16,6 +16,8 @@ commits without depending on a form library or prescribing rendered controls.
   reactive `Binding` that preserves the origin of each write.
 - **Field metadata**: resolve signal-backed accessibility and interaction state from explicit props,
   Field Context, or standalone state.
+- **Control attributes**: derive a control's `id`, `name`, state, and ARIA references in one call,
+  spelled the way the rendered element accepts them.
 - **Headless field parts**: render unstyled fields, labels, descriptions, and errors with coordinated
   ARIA attributes and focus requests.
 - **Conformance testing**: verify widget registries through reusable probes without a browser renderer
@@ -53,6 +55,65 @@ tracks this in [DioxusLabs/dioxus#4019](https://github.com/DioxusLabs/dioxus/iss
 on `main` by [DioxusLabs/dioxus#5554](https://github.com/DioxusLabs/dioxus/pull/5554) for the 0.8
 release line.
 
+## Control Attributes
+
+A field-aware control resolves its metadata once, then asks for the attributes its element should
+carry:
+
+```rust
+use dioxus_field::{FieldControlOptions, FieldSurface, use_field_meta};
+
+let meta = use_field_meta(props.meta);
+let attributes = meta.attributes_for(
+    &FieldControlOptions::new()
+        .required(props.required)
+        .disabled(props.disabled)
+        .name(props.name.clone())
+        // A `button[role=switch]` takes native `disabled`, but `required` has no native
+        // spelling there.
+        .surface(FieldSurface::BUTTON_WIDGET),
+);
+```
+
+Explicit props win over Field Context, which wins over standalone state. Resolution happens before
+any attribute is built, so an overridden state is never emitted twice and the control never filters
+the result.
+
+`FieldSurface` carries one axis per attribute — `required`, `disabled`, `validity`, and `name` —
+because their validity lattices disagree: native `disabled` is legal on a `button` where native
+`required` is not, and `name` is not a valid attribute on the `div` a radio group roots on. Presets
+cover the common elements: `NATIVE` for `input` / `textarea` / `select`, `BUTTON_WIDGET` for
+`button[role=checkbox|switch]`, and `ARIA_WIDGET` for `div[role=radiogroup]`.
+
+The returned vector is sorted by attribute name and holds at most one entry per name. The sort is
+what `dioxus-core` requires of any spread — its attribute diff is a sorted merge-join, so an
+unsorted spread makes a later render drop attributes that did not change. The single entry per name
+guards the neighbouring failure, where a duplicate that drops to one deletes the attribute outright.
+
+To combine that with a widget's own attributes, hand both to `merge_attributes`:
+
+```rust
+use dioxus_field::merge_attributes;
+
+let merged = merge_attributes(vec![
+    meta.attributes_for(&options),
+    base_attributes,
+    explicit_attributes,
+    props.attributes,
+]);
+```
+
+Groups resolve last-wins, ordered weakest to strongest, and the result keeps the sort and the
+one-entry-per-name guarantee. `class` is the exception: values are concatenated weakest-first, so a
+widget's own classes survive a caller's.
+
+Pass ordered groups rather than one pre-concatenated list: merging the metadata into the explicit
+props before the call moves the widget's base attributes past both, so base silently outranks an
+explicit `name` or `required` it was meant to lose to. To replace a value the metadata supplied, set
+the matching override on `FieldControlOptions` instead of adding a second entry. Widgets already
+merging through `merge_attributes` in `dioxus-primitives` do not need this one — that helper also
+sorts, deduplicates, and concatenates `class`.
+
 ## Conformance Testing
 
 Widget registries can use the public `dioxus_field::testing` module from ordinary integration tests;
@@ -67,7 +128,7 @@ registry states which one each widget meets:
   outside the `VirtualDom`, obtain its Dioxus callbacks while rendering the test component, drive the
   registry component through its normal interaction path, then call the assertion after rendering.
 
-Keep these five named tests in every registry:
+Keep these six named tests in every registry:
 
 | Test | Kit API | Registry adapter responsibility |
 | --- | --- | --- |
@@ -75,6 +136,7 @@ Keep these five named tests in every registry:
 | `writes_carry_their_change_origin` | `ChangeOriginProbe` | Give the produced binding to the widget and drive user and programmatic writes. |
 | `binding_resolution_precedence_holds_for_values_and_meta_flags` | `assert_binding_resolution_precedence`, `assert_meta_resolution_precedence`, `assert_meta_flag_precedence` | Exercise explicit, Field Context, and internal sources; report flags from actual rendered state or attributes. |
 | `focus_request_round_trips_to_the_widget_control` | `FocusRoundTripProbe` | Register `on_focus()` through the widget's normal focus registration and request focus through Field Context. |
+| `a_focus_request_does_not_move_focus_while_the_control_is_disabled` | `FocusRoundTripProbe::assert_focus_not_moved` | Request focus while the widget is disabled. A disabled control focuses nothing rather than handing focus to a proxy element. |
 | `error_and_description_ids_appear_on_mount_and_vanish_on_drop` | `assert_field_part_ids` | Mount and drop the registry's description and error parts around the same `FieldMeta`. |
 
 The test adapter is intentionally registry-owned. It may dispatch DOM events or expose the same
@@ -83,7 +145,7 @@ test-only code. This keeps the assertions shared while allowing checkbox, select
 widgets to retain their native interaction semantics.
 
 The `testing` module documentation links to a runnable interaction-probe adapter, and
-`tests/conformance.rs` is the reference implementation exercising all five tests against a minimal
+`tests/conformance.rs` is the reference implementation exercising all six tests against a minimal
 conforming widget.
 
 ## Development
