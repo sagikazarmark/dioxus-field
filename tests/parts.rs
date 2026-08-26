@@ -455,3 +455,26 @@ fn an_explicit_required_prop_overrides_the_metadata_state_on_every_part() {
         "the states left unoverridden must still come from the metadata, got {rendered}"
     );
 }
+
+#[test]
+fn a_label_with_nothing_to_resolve_points_its_for_at_nothing() {
+    fn app() -> Element {
+        rsx! {
+            Label { "Email" }
+        }
+    }
+
+    let mut dom = VirtualDom::new(app);
+    dom.rebuild_in_place();
+    let rendered = dioxus_ssr::render(&dom);
+
+    assert!(
+        !rendered.contains("for="),
+        "a label that resolved only its own standalone metadata labels no control, so it must not \
+         emit a for reference the crate invented, got {rendered}"
+    );
+    assert!(
+        rendered.contains("id=\"dxf-label-"),
+        "the label keeps its own id, which is what aria-labelledby would reference, got {rendered}"
+    );
+}

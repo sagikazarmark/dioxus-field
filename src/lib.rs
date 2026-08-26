@@ -1223,11 +1223,32 @@ pub fn use_binding<T: 'static>(explicit: Option<Binding<T>>, default: T) -> Bind
 /// The standalone state hook is always called so the source can change between renders without
 /// violating Dioxus's hook ordering rules.
 pub fn use_field_meta(explicit: Option<FieldMeta>) -> FieldMeta {
+    use_resolved_field_meta(explicit.as_ref()).0
+}
+
+/// Where a part's resolved metadata came from.
+///
+/// A part that renders a reference *to a control* needs this: an id resolved from metadata nobody
+/// else holds addresses no rendered element, so the reference would dangle.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FieldMetaSource {
+    /// An explicit prop or the Field Context. A control may hold the same metadata, and if the
+    /// caller passed it deliberately, one is meant to.
+    Shared,
+    /// This part's own standalone state, which by construction no control is reading.
+    Standalone,
+}
+
+/// Resolves metadata as [`use_field_meta`] does, and reports which source won.
+fn use_resolved_field_meta(explicit: Option<&FieldMeta>) -> (FieldMeta, FieldMetaSource) {
     let internal = use_field_meta_state(FieldMetaValues::default());
 
     explicit
+        .copied()
         .or_else(|| try_consume_context::<FieldContext>().and_then(|context| context.meta()))
-        .unwrap_or(internal)
+        .map_or((internal, FieldMetaSource::Standalone), |meta| {
+            (meta, FieldMetaSource::Shared)
+        })
 }
 
 /// Resolves the current [`FocusRequest`], or creates a standalone slot when no context exists.
@@ -1371,16 +1392,21 @@ pub struct LabelProps {
 /// Renders an unstyled `label` associated with the resolved metadata's control id.
 ///
 /// This part can resolve metadata from Field Context, accept it explicitly, or run standalone.
+/// Running standalone means no control shares the metadata, so no `for` is emitted — the label
+/// still carries its own id, which is the reference a control would reach through
+/// `aria-labelledby`.
 #[allow(non_snake_case)]
 #[allow(
     clippy::missing_errors_doc,
     reason = "Dioxus Element uses Result as its renderer protocol"
 )]
 pub fn Label(props: LabelProps) -> Element {
-    let meta = use_field_meta(props.meta);
+    let (meta, source) = use_resolved_field_meta(props.meta.as_ref());
     let id = use_part_id(props.id, "label");
     use_field_meta_id_registration(&meta, RegisteredIdKind::Label, Rc::clone(&id));
-    let control_id = meta.id().to_string();
+    // Metadata the label resolved for itself alone addresses no rendered control, so pointing
+    // `for` at its generated id would dangle. Emitting nothing is what 0.1.0 did, and is honest.
+    let control_id = (source == FieldMetaSource::Shared).then(|| meta.id().to_string());
     let attributes = part_attributes(
         &meta,
         FieldStateOverrides {
