@@ -7,13 +7,14 @@
 
 **A form-library-agnostic field convention for Dioxus widget libraries.**
 
-`dioxus-field` lets widget libraries accept reactive values, change callbacks, and interaction
-commits without depending on a form library or prescribing rendered controls.
+`dioxus-field` lets widget libraries accept reactive values, change callbacks, interaction commits,
+and logical focus exits without depending on a form library or prescribing rendered controls.
 
 ## Features
 
 - **Two binding levels**: use a dependency-free `value` / `on_change` / `on_commit` prop trio or a
-  reactive `Binding` that preserves the origin of each write.
+  reactive `Binding` that preserves each write's origin and independently reports Commit and Focus
+  Exit.
 - **Field metadata**: resolve signal-backed accessibility and interaction state from explicit props,
   Field Context, or standalone state.
 - **Control attributes**: derive a control's `id`, `name`, state, and ARIA references in one call,
@@ -139,14 +140,26 @@ Keep these six named tests in every registry:
 | `a_focus_request_does_not_move_focus_while_the_control_is_disabled` | `FocusRoundTripProbe::assert_focus_not_moved` | Request focus while the widget is disabled. A disabled control focuses nothing rather than handing focus to a proxy element. |
 | `error_and_description_ids_appear_on_mount_and_vanish_on_drop` | `assert_field_part_ids` | Mount and drop the registry's description and error parts around the same `FieldMeta`. |
 
+Bindings that opt into Focus Exit can add these tests without changing either conformance level:
+
+| Test | Kit API | Registry adapter responsibility |
+| --- | --- | --- |
+| `a_reported_focus_exit_is_observable_exactly_once` | `FocusExitProbe` | Wire `on_focus_exit()` through `Binding::with_focus_exit`, leave the widget's complete logical focus scope once, and assert one report. |
+| `internal_focus_movement_does_not_report_focus_exit` | `FocusExitProbe::assert_no_focus_exit` | Move focus between owned controls or popup/portal content without leaving the logical scope. |
+| `commit_without_focus_exit_remains_valid` | `FocusExitOrderProbe` | Drive an interaction that commits while focus remains in the widget. |
+| `focus_exit_is_observed_after_synchronous_write_and_commit` | `FocusExitOrderProbe` | Drive the widget's normal write, Commit, then Focus Exit path and assert the observed order. |
+
+The registry defines the complete logical focus scope and owns its detection and deduplication.
+Controls that implement only the Binding Prop Trio remain exempt from Focus Exit conformance.
+
 The test adapter is intentionally registry-owned. It may dispatch DOM events or expose the same
 handlers the rendered control uses, but it should not reproduce binding or metadata resolution in
 test-only code. This keeps the assertions shared while allowing checkbox, select, slider, and other
 widgets to retain their native interaction semantics.
 
 The `testing` module documentation links to a runnable interaction-probe adapter, and
-`tests/conformance.rs` is the reference implementation exercising all six tests against a minimal
-conforming widget.
+`tests/conformance.rs` is the reference implementation exercising all six required tests plus the
+optional Focus Exit tests against a minimal conforming widget.
 
 ## Development
 

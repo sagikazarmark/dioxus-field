@@ -6,9 +6,9 @@ use dioxus_field::{
     Binding, ChangeOrigin, Field, FieldContext, FieldControlOptions, FieldDescription, FieldError,
     FieldMeta, FieldMetaValues, FocusRequest, merge_attributes,
     testing::{
-        ChangeOriginProbe, CommitOrderProbe, FocusRoundTripProbe, OverridableMetaFlags,
-        assert_binding_resolution_precedence, assert_field_part_ids, assert_meta_flag_precedence,
-        assert_meta_resolution_precedence,
+        ChangeOriginProbe, CommitOrderProbe, FocusExitOrderProbe, FocusExitProbe,
+        FocusRoundTripProbe, OverridableMetaFlags, assert_binding_resolution_precedence,
+        assert_field_part_ids, assert_meta_flag_precedence, assert_meta_resolution_precedence,
     },
     use_binding, use_field_meta, use_field_meta_state, use_focus_registration, use_focus_request,
 };
@@ -22,6 +22,8 @@ struct WidgetDriverState {
     flags: Option<OverridableMetaFlags>,
     on_change: Option<Callback<(i32, ChangeOrigin)>>,
     on_commit: Option<Callback<()>>,
+    on_focus_exit: Option<Callback<()>>,
+    on_internal_focus_movement: Option<Callback<()>>,
 }
 
 #[derive(Clone, Default)]
@@ -65,6 +67,22 @@ impl WidgetDriver {
             .expect("widget should expose its commit handler")
             .call(());
     }
+
+    fn focus_exit(&self) {
+        self.0
+            .borrow()
+            .on_focus_exit
+            .expect("widget should expose its focus-exit handler")
+            .call(());
+    }
+
+    fn move_focus_within_scope(&self) {
+        self.0
+            .borrow()
+            .on_internal_focus_movement
+            .expect("widget should expose its internal focus-movement handler")
+            .call(());
+    }
 }
 
 impl PartialEq for WidgetDriver {
@@ -104,6 +122,7 @@ fn ConformingWidget(props: ConformingWidgetProps) -> Element {
     )
     .with_required(props.required.unwrap_or_else(|| meta.required()));
     let mut focused = use_signal(|| false);
+    let mut focus_in_owned_content = use_signal(|| false);
     let on_control_focus = props.focus_probe.map(|probe| probe.on_focus());
     // `use_callback` keeps one callback identity across renders, which `use_focus_registration`
     // requires: `Callback::new` here would re-register every render and steal the field's focus
@@ -122,6 +141,7 @@ fn ConformingWidget(props: ConformingWidgetProps) -> Element {
 
     let change_binding = binding.clone();
     let commit_binding = binding.clone();
+    let focus_exit_binding = binding.clone();
     *props.driver.0.borrow_mut() = WidgetDriverState {
         binding: Some(binding.clone()),
         meta: Some(meta),
@@ -130,12 +150,24 @@ fn ConformingWidget(props: ConformingWidgetProps) -> Element {
             change_binding.write(value, origin);
         })),
         on_commit: Some(Callback::new(move |()| commit_binding.commit())),
+        on_focus_exit: Some(Callback::new(move |()| focus_exit_binding.focus_exit())),
+        on_internal_focus_movement: Some(Callback::new(move |()| {
+            focus_in_owned_content.set(true);
+        })),
     };
 
     let mut widget_attributes = Vec::new();
 
     if focused() {
         widget_attributes.push(Attribute::new("data-focused", "true", None, false));
+    }
+    if focus_in_owned_content() {
+        widget_attributes.push(Attribute::new(
+            "data-focus-in-owned-content",
+            "true",
+            None,
+            false,
+        ));
     }
 
     // Ordered weakest to strongest, so the widget's own attributes win a name the metadata also
@@ -148,6 +180,111 @@ fn ConformingWidget(props: ConformingWidgetProps) -> Element {
             ..attributes,
         }
     }
+}
+
+#[derive(Clone)]
+struct FocusExitHarness {
+    probe: FocusExitProbe,
+    driver: WidgetDriver,
+}
+
+fn focus_exit_app(harness: FocusExitHarness) -> Element {
+    let value = use_signal(|| 1);
+    let binding: Binding<i32> = value.into();
+    let binding = binding.with_focus_exit(harness.probe.on_focus_exit());
+
+    rsx! { ConformingWidget { binding, driver: harness.driver } }
+}
+
+#[test]
+fn a_reported_focus_exit_is_observable_exactly_once() {
+    let probe = FocusExitProbe::new();
+    let driver = WidgetDriver::default();
+    let mut dom = VirtualDom::new_with_props(
+        focus_exit_app,
+        FocusExitHarness {
+            probe: probe.clone(),
+            driver: driver.clone(),
+        },
+    );
+    dom.rebuild_in_place();
+
+    dom.in_runtime(|| driver.focus_exit());
+
+    probe.assert_focus_exit_once();
+}
+
+#[test]
+fn internal_focus_movement_does_not_report_focus_exit() {
+    let probe = FocusExitProbe::new();
+    let driver = WidgetDriver::default();
+    let mut dom = VirtualDom::new_with_props(
+        focus_exit_app,
+        FocusExitHarness {
+            probe: probe.clone(),
+            driver: driver.clone(),
+        },
+    );
+    dom.rebuild_in_place();
+
+    dom.in_runtime(|| driver.move_focus_within_scope());
+    dom.render_immediate_to_vec();
+
+    assert!(dioxus_ssr::render(&dom).contains("data-focus-in-owned-content=\"true\""));
+    probe.assert_no_focus_exit();
+}
+
+#[derive(Clone)]
+struct FocusExitOrderHarness {
+    probe: FocusExitOrderProbe,
+    driver: WidgetDriver,
+}
+
+fn focus_exit_order_app(harness: FocusExitOrderHarness) -> Element {
+    let value = use_signal(|| 1);
+    let binding = harness.probe.binding(ReadSignal::from(value));
+
+    rsx! { ConformingWidget { binding, driver: harness.driver } }
+}
+
+#[test]
+fn commit_without_focus_exit_remains_valid() {
+    let probe = FocusExitOrderProbe::new();
+    let driver = WidgetDriver::default();
+    let mut dom = VirtualDom::new_with_props(
+        focus_exit_order_app,
+        FocusExitOrderHarness {
+            probe: probe.clone(),
+            driver: driver.clone(),
+        },
+    );
+    dom.rebuild_in_place();
+
+    dom.in_runtime(|| driver.commit());
+
+    probe.assert_commit_without_focus_exit();
+}
+
+#[test]
+fn focus_exit_is_observed_after_synchronous_write_and_commit() {
+    let probe = FocusExitOrderProbe::new();
+    let driver = WidgetDriver::default();
+    let mut dom = VirtualDom::new_with_props(
+        focus_exit_order_app,
+        FocusExitOrderHarness {
+            probe: probe.clone(),
+            driver: driver.clone(),
+        },
+    );
+    dom.rebuild_in_place();
+
+    dom.in_runtime(|| {
+        driver.change(2, ChangeOrigin::User);
+        driver.commit();
+        driver.focus_exit();
+    });
+
+    probe.assert_write_and_commit_before_focus_exit();
 }
 
 #[derive(Clone)]

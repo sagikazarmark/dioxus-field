@@ -16,11 +16,16 @@
 //!   three resolution-precedence assertions, both [`FocusRoundTripProbe`] assertions, and
 //!   [`assert_field_part_ids`].
 //!
+//! Bindings that support Focus Exit can additionally use [`FocusExitProbe`] and
+//! [`FocusExitOrderProbe`]. These probes are optional: they do not add requirements to the
+//! dependency-free prop trio or to existing Commit-only field-aware conformance. Widget-specific
+//! logical-scope detection and deduplication remain the registry's responsibility.
+//!
 //! # Example
 //!
 //! The [runnable interaction-probe adapter] demonstrates how callbacks created during rendering
 //! reach a registry-owned driver. The [complete conformance test] exercises all six required tests
-//! against a minimal field-aware widget.
+//! and the optional Focus Exit tests against a minimal field-aware widget.
 //!
 //! [runnable interaction-probe adapter]: https://docs.rs/crate/dioxus-field/latest/source/examples/conformance.rs
 //! [complete conformance test]: https://docs.rs/crate/dioxus-field/latest/source/tests/conformance.rs
@@ -78,6 +83,139 @@ impl CommitOrderProbe {
 enum CommitOrderEvent {
     Commit,
     Submit,
+}
+
+/// Records reports that focus left a widget's complete logical focus scope.
+///
+/// This probe is optional and does not change Commit-only conformance. Registry tests can use
+/// [`FocusExitProbe::assert_no_focus_exit`] after moving focus between owned controls or popup
+/// content to verify that the widget retains the complete logical scope.
+#[derive(Clone, Debug, Default)]
+pub struct FocusExitProbe {
+    focus_exits: Rc<Cell<usize>>,
+}
+
+impl FocusExitProbe {
+    /// Creates an empty Focus Exit probe.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns the callback to supply through [`Binding::with_focus_exit`].
+    pub fn on_focus_exit(&self) -> Callback<()> {
+        let focus_exits = Rc::clone(&self.focus_exits);
+        Callback::new(move |()| focus_exits.set(focus_exits.get() + 1))
+    }
+
+    /// Asserts that Focus Exit was reported exactly once.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the callback was omitted or invoked more than once.
+    pub fn assert_focus_exit_once(&self) {
+        assert_eq!(
+            self.focus_exits.get(),
+            1,
+            "focus leaving the widget's complete logical scope must be reported exactly once"
+        );
+    }
+
+    /// Asserts that Focus Exit was not reported.
+    ///
+    /// Use this after internal focus movement or a Commit that leaves focus inside the widget.
+    ///
+    /// # Panics
+    ///
+    /// Panics when Focus Exit was reported.
+    pub fn assert_no_focus_exit(&self) {
+        assert_eq!(
+            self.focus_exits.get(),
+            0,
+            "internal focus movement and Commit must not imply Focus Exit"
+        );
+    }
+}
+
+impl PartialEq for FocusExitProbe {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.focus_exits, &other.focus_exits)
+    }
+}
+
+/// Records the relative order of binding writes, Commits, and Focus Exits.
+///
+/// This optional probe creates a [`Binding`] for a registry adapter to drive through its normal
+/// interaction path. Its write callback records the event but deliberately owns no value state;
+/// use [`ChangeOriginProbe`] separately when the test also needs to assert values and origins.
+#[derive(Clone, Debug, Default)]
+pub struct FocusExitOrderProbe {
+    events: Rc<RefCell<Vec<FocusExitOrderEvent>>>,
+}
+
+impl FocusExitOrderProbe {
+    /// Creates an empty Focus Exit order probe.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Creates a binding that records writes, Commits, and Focus Exits in call order.
+    pub fn binding<T: 'static>(&self, read: ReadSignal<T>) -> Binding<T> {
+        let write_events = Rc::clone(&self.events);
+        let commit_events = Rc::clone(&self.events);
+        let focus_exit_events = Rc::clone(&self.events);
+
+        Binding::new(
+            read,
+            Callback::new(move |_| {
+                write_events.borrow_mut().push(FocusExitOrderEvent::Write);
+            }),
+            Callback::new(move |()| {
+                commit_events.borrow_mut().push(FocusExitOrderEvent::Commit);
+            }),
+        )
+        .with_focus_exit(Callback::new(move |()| {
+            focus_exit_events
+                .borrow_mut()
+                .push(FocusExitOrderEvent::FocusExit);
+        }))
+    }
+
+    /// Asserts that one Commit occurred without a Focus Exit.
+    ///
+    /// # Panics
+    ///
+    /// Panics when Commit was omitted or repeated, or any write or Focus Exit was observed.
+    pub fn assert_commit_without_focus_exit(&self) {
+        assert_eq!(
+            *self.events.borrow(),
+            [FocusExitOrderEvent::Commit],
+            "Commit while focus remains in the widget must not imply Focus Exit"
+        );
+    }
+
+    /// Asserts that one synchronous write and Commit were observed before one Focus Exit.
+    ///
+    /// # Panics
+    ///
+    /// Panics when an event was omitted, repeated, or observed out of order.
+    pub fn assert_write_and_commit_before_focus_exit(&self) {
+        assert_eq!(
+            *self.events.borrow(),
+            [
+                FocusExitOrderEvent::Write,
+                FocusExitOrderEvent::Commit,
+                FocusExitOrderEvent::FocusExit,
+            ],
+            "Focus Exit must follow any synchronous widget write and Commit for the interaction"
+        );
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FocusExitOrderEvent {
+    Write,
+    Commit,
+    FocusExit,
 }
 
 /// Records values written through a [`Binding`] together with their [`ChangeOrigin`].
