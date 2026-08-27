@@ -184,7 +184,7 @@ checksum = "96007ed6cbad951dfed82d83c581aabd95bc591f351f5666d454ddbe7845b324"
 
 [[package]]
 name = "dioxus-field"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "dioxus",
  "dioxus-core",
