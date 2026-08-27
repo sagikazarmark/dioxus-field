@@ -106,6 +106,89 @@ fn trio_decomposition_marks_changes_as_user_changes_and_forwards_commit() {
 }
 
 #[test]
+fn focus_exit_is_optional_independent_and_part_of_binding_identity() {
+    #[derive(Default)]
+    struct Probe {
+        commits: RefCell<usize>,
+        focus_exits: RefCell<usize>,
+    }
+
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "VirtualDom entrypoints receive their root properties by value"
+    )]
+    fn app(probe: Rc<Probe>) -> dioxus_core::Element {
+        let signal = use_signal(|| 7);
+        let commit_probe = Rc::clone(&probe);
+        let focus_exit_probe = Rc::clone(&probe);
+        let commit = Callback::new(move |()| *commit_probe.commits.borrow_mut() += 1);
+        let focus_exit = Callback::new(move |()| *focus_exit_probe.focus_exits.borrow_mut() += 1);
+        let binding = Binding::new_with_identity(
+            ReadSignal::from(signal),
+            Callback::new(|_| {}),
+            commit,
+            "shared binding",
+        )
+        .with_focus_exit(focus_exit);
+        let equal = Binding::new_with_identity(
+            ReadSignal::from(signal),
+            Callback::new(|_| {}),
+            commit,
+            "shared binding",
+        )
+        .with_focus_exit(focus_exit);
+        let different_focus_exit = Binding::new_with_identity(
+            ReadSignal::from(signal),
+            Callback::new(|_| {}),
+            commit,
+            "shared binding",
+        )
+        .with_focus_exit(Callback::new(|()| {}));
+
+        binding.commit();
+        assert_eq!(*probe.focus_exits.borrow(), 0);
+        binding.focus_exit();
+        assert_eq!(*probe.commits.borrow(), 1);
+        assert_eq!(*probe.focus_exits.borrow(), 1);
+        assert_eq!(binding, equal);
+        assert_ne!(binding, different_focus_exit);
+
+        VNode::empty()
+    }
+
+    let probe = Rc::new(Probe::default());
+    VirtualDom::new_with_props(app, Rc::clone(&probe)).rebuild_in_place();
+
+    assert_eq!(*probe.commits.borrow(), 1);
+    assert_eq!(*probe.focus_exits.borrow(), 1);
+}
+
+#[test]
+fn existing_constructors_and_conversions_install_noop_focus_exit() {
+    fn app() -> dioxus_core::Element {
+        let signal = use_signal(|| 7);
+        let read = ReadSignal::from(signal);
+        let write = Callback::new(|_| {});
+        let commit = Callback::new(|()| {});
+        let on_change = Callback::new(|_| {});
+
+        Binding::new(read, write, commit).focus_exit();
+        Binding::new_with_identity(read, write, commit, "binding identity").focus_exit();
+
+        let from_signal: Binding<i32> = signal.into();
+        from_signal.focus_exit();
+        let from_pair: Binding<i32> = (read, on_change).into();
+        from_pair.focus_exit();
+        let from_value: Binding<i32> = 7.into();
+        from_value.focus_exit();
+
+        VNode::empty()
+    }
+
+    VirtualDom::new(app).rebuild_in_place();
+}
+
+#[test]
 fn binding_resolution_prefers_explicit_then_context_then_internal_state() {
     fn app() -> dioxus_core::Element {
         let context_signal = use_signal(|| 10);

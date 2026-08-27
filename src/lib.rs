@@ -2,8 +2,9 @@
 //!
 //! Use this crate to connect form-library-owned values and metadata to field-shaped widgets without
 //! coupling the widget library to a form implementation. [`Binding`] is the upper-level reactive
-//! contract. Widget registries that do not depend on this crate can instead accept separate `value`,
-//! `on_change`, and `on_commit` props matching the lower-level [`BindingPropTrio`] contract.
+//! contract, including independent Commit and Focus Exit reports. Widget registries that do not
+//! depend on this crate can instead accept separate `value`, `on_change`, and `on_commit` props
+//! matching the lower-level [`BindingPropTrio`] contract.
 //!
 //! # Quick start
 //!
@@ -858,19 +859,44 @@ pub enum ChangeOrigin {
 
 /// A reactive, two-way binding to one field-shaped value.
 ///
+/// # Interaction boundaries
+///
+/// [`Binding::commit`] and [`Binding::focus_exit`] report independent facts:
+///
+/// - **Commit** is the widget-defined end of one interaction unit. A switch click or slider release
+///   can commit while the control remains focused.
+/// - **Focus Exit** means focus left the widget's complete logical focus scope. An unchanged native
+///   text input can report Focus Exit without committing a value change.
+///
+/// ## Native control example
+///
+/// A switch click can call `write`, then `commit`, while focus remains on the switch. A later
+/// departure from the switch calls `focus_exit`. An unchanged text input that loses focus can call
+/// only `focus_exit` because there was no value interaction to commit.
+///
+/// ## Compound-widget example
+///
+/// For a compound widget, the logical focus scope includes its owned controls and popup or portal
+/// content. Moving focus from a combobox trigger into its popup does not report Focus Exit. When a
+/// selection writes and commits before focus leaves that complete scope, report the write, then
+/// Commit, then Focus Exit.
+///
 /// Equality compares the binding's producer-defined identity. Equal bindings are guaranteed to
-/// represent the same read and write behavior; producers may conservatively return unequal
-/// bindings when they cannot prove that interchangeability.
+/// represent interchangeable read, write, Commit, and Focus Exit behavior; producers may
+/// conservatively return unequal bindings when they cannot prove that interchangeability.
 pub struct Binding<T: 'static> {
     /// The binding's reactive value.
     pub read: ReadSignal<T>,
     write: Callback<(T, ChangeOrigin)>,
     commit: Callback<()>,
+    focus_exit: Callback<()>,
     identity: BindingIdentity,
 }
 
 impl<T: 'static> Binding<T> {
     /// Creates a binding identified by its exact read, write, and commit handles.
+    ///
+    /// Focus Exit is a no-op unless replaced with [`Binding::with_focus_exit`].
     pub fn new(
         read: ReadSignal<T>,
         write: Callback<(T, ChangeOrigin)>,
@@ -882,7 +908,8 @@ impl<T: 'static> Binding<T> {
     /// Creates a binding with a producer-defined comparable identity.
     ///
     /// Equal identities must always represent interchangeable read, write, and commit behavior.
-    /// Producers that cannot prove interchangeability should use [`Binding::new`] instead.
+    /// This constructor installs no-op Focus Exit behavior, so that behavior is interchangeable as
+    /// well. Producers that cannot prove interchangeability should use [`Binding::new`] instead.
     pub fn new_with_identity<I>(
         read: ReadSignal<T>,
         write: Callback<(T, ChangeOrigin)>,
@@ -896,8 +923,21 @@ impl<T: 'static> Binding<T> {
             read,
             write,
             commit,
+            focus_exit: Callback::new(|()| {}),
             identity: BindingIdentity::new(identity),
         }
+    }
+
+    /// Adds the callback invoked when focus leaves the widget's complete logical focus scope.
+    ///
+    /// This builder also incorporates the callback into binding identity, preserving the guarantee
+    /// that equal bindings have interchangeable Focus Exit behavior. It does not alter Commit or
+    /// imply any form-library blur, touched, or validation semantics.
+    #[must_use]
+    pub fn with_focus_exit(mut self, focus_exit: Callback<()>) -> Self {
+        self.identity = BindingIdentity::new((self.identity, focus_exit));
+        self.focus_exit = focus_exit;
+        self
     }
 
     /// Writes a value and preserves where the change originated.
@@ -908,6 +948,15 @@ impl<T: 'static> Binding<T> {
     /// Reports the widget-defined end of one interaction unit.
     pub fn commit(&self) {
         self.commit.call(());
+    }
+
+    /// Reports that focus left the widget's complete logical focus scope.
+    ///
+    /// This is independent from [`Binding::commit`]. Widgets are responsible for defining their
+    /// complete scope, including owned child controls and popup or portal content, and for
+    /// suppressing reports while focus moves within it.
+    pub fn focus_exit(&self) {
+        self.focus_exit.call(());
     }
 
     /// Decomposes this binding into the dependency-free widget prop contract.
@@ -940,6 +989,7 @@ impl<T: 'static> Clone for Binding<T> {
             read: self.read,
             write: self.write,
             commit: self.commit,
+            focus_exit: self.focus_exit,
             identity: self.identity.clone(),
         }
     }
