@@ -1,6 +1,6 @@
 [package]
 name = "dioxus-field"
-version = "0.3.0"
+version = "0.4.0"
 description = "A form-library-agnostic field convention for Dioxus"
 edition = "2024"
 rust-version = "1.92"
