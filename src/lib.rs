@@ -1138,6 +1138,37 @@ impl Drop for FocusRegistration {
     }
 }
 
+/// A requested binding type did not match the binding stored in a [`FieldContext`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BindingTypeMismatch {
+    actual_type_name: &'static str,
+    requested_type_name: &'static str,
+}
+
+impl BindingTypeMismatch {
+    /// Returns the value type of the binding stored in the context.
+    pub const fn actual_type_name(&self) -> &'static str {
+        self.actual_type_name
+    }
+
+    /// Returns the value type requested by the control.
+    pub const fn requested_type_name(&self) -> &'static str {
+        self.requested_type_name
+    }
+}
+
+impl fmt::Display for BindingTypeMismatch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Field Context contains a binding for {}, but a binding for {} was requested",
+            self.actual_type_name, self.requested_type_name
+        )
+    }
+}
+
+impl std::error::Error for BindingTypeMismatch {}
+
 /// Type-erased context for one field's binding, metadata, and focus request slot.
 ///
 /// The context itself is intentionally not generic. This lets [`use_binding`] distinguish an
@@ -1222,26 +1253,66 @@ impl FieldContext {
     ///
     /// Panics when the field context contains no binding or a binding for a different value type.
     pub fn resolve<T: 'static>(&self) -> Binding<T> {
-        let erased = self
-            .binding
-            .as_ref()
-            .unwrap_or_else(|| panic!("Field Context contains no value binding"));
-
-        erased
-            .binding
-            .downcast_ref::<Binding<T>>()
-            .unwrap_or_else(|| {
-                panic!(
-                    "Field Context contains a binding for {}, but a binding for {} was requested",
-                    erased.value_type_name,
-                    std::any::type_name::<T>()
-                )
-            })
-            .clone()
+        match self.try_resolve() {
+            Ok(Some(binding)) => binding,
+            Ok(None) => panic!("Field Context contains no value binding"),
+            Err(mismatch) => panic!("{mismatch}"),
+        }
     }
 
-    fn try_resolve<T: 'static>(&self) -> Option<Binding<T>> {
-        self.binding.as_ref().map(|_| self.resolve())
+    /// Tries to resolve the context binding for `T` without panicking.
+    ///
+    /// `Ok(Some(_))` contains a matching binding, `Ok(None)` means the context has no value
+    /// binding, and `Err(_)` reports the actual and requested value types when they differ. This
+    /// lets a control support more than one binding type while preserving absence as the signal to
+    /// use standalone state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BindingTypeMismatch`] when the context contains a binding whose value type is not
+    /// `T`.
+    ///
+    /// ```rust
+    /// use dioxus_field::{Binding, BindingTypeMismatch, FieldContext};
+    ///
+    /// #[derive(Clone, Copy)]
+    /// enum CheckboxState {
+    ///     Checked,
+    ///     Indeterminate,
+    ///     Unchecked,
+    /// }
+    ///
+    /// enum CheckboxBinding {
+    ///     State(Binding<CheckboxState>),
+    ///     Boolean(Binding<bool>),
+    /// }
+    ///
+    /// fn resolve_checkbox_binding(
+    ///     context: &FieldContext,
+    /// ) -> Result<Option<CheckboxBinding>, BindingTypeMismatch> {
+    ///     match context.try_resolve::<CheckboxState>() {
+    ///         Ok(Some(binding)) => Ok(Some(CheckboxBinding::State(binding))),
+    ///         Ok(None) => Ok(None),
+    ///         Err(_) => context
+    ///             .try_resolve::<bool>()
+    ///             .map(|binding| binding.map(CheckboxBinding::Boolean)),
+    ///     }
+    /// }
+    /// ```
+    pub fn try_resolve<T: 'static>(&self) -> Result<Option<Binding<T>>, BindingTypeMismatch> {
+        let Some(erased) = &self.binding else {
+            return Ok(None);
+        };
+
+        let binding = erased
+            .binding
+            .downcast_ref::<Binding<T>>()
+            .ok_or(BindingTypeMismatch {
+                actual_type_name: erased.value_type_name,
+                requested_type_name: std::any::type_name::<T>(),
+            })?;
+
+        Ok(Some(binding.clone()))
     }
 
     fn with_focus_request(mut self, focus_request: FocusRequest) -> Self {
@@ -1336,6 +1407,11 @@ pub fn provide_field_context<T: 'static>(binding: Binding<T>) -> FieldContext {
 ///
 /// The internal signal hook is called regardless of which source wins so the resolution order can
 /// change between renders without violating Dioxus's hook ordering rules.
+///
+/// # Panics
+///
+/// Panics when there is no explicit binding and the Field Context contains a binding for a value
+/// type other than `T`.
 pub fn use_binding<T: 'static>(explicit: Option<Binding<T>>, default: T) -> Binding<T> {
     let internal = use_signal(|| default);
 
@@ -1343,10 +1419,12 @@ pub fn use_binding<T: 'static>(explicit: Option<Binding<T>>, default: T) -> Bind
         return binding;
     }
 
-    if let Some(binding) =
-        try_consume_context::<FieldContext>().and_then(|context| context.try_resolve())
-    {
-        return binding;
+    if let Some(context) = try_consume_context::<FieldContext>() {
+        match context.try_resolve() {
+            Ok(Some(binding)) => return binding,
+            Ok(None) => {}
+            Err(mismatch) => panic!("{mismatch}"),
+        }
     }
 
     internal.into()

@@ -220,7 +220,9 @@ fn binding_resolution_prefers_explicit_then_context_then_internal_state() {
 }
 
 #[test]
-#[should_panic(expected = "Field Context contains a binding for")]
+#[should_panic(
+    expected = "Field Context contains a binding for alloc::string::String, but a binding for i32 was requested"
+)]
 fn wrong_context_value_type_is_a_loud_error() {
     #[allow(
         clippy::needless_pass_by_value,

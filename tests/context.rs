@@ -7,6 +7,55 @@ use dioxus::prelude::*;
 use dioxus_field::{Binding, Field, FieldContext, FieldMetaValues};
 
 #[test]
+fn fallible_binding_resolution_distinguishes_match_absence_and_mismatch() {
+    fn app() -> Element {
+        let signal = use_signal(|| 7_i32);
+        let binding: Binding<i32> = signal.into();
+        let context = FieldContext::new(binding.clone());
+
+        let resolved = context
+            .try_resolve::<i32>()
+            .expect("matching binding types should resolve")
+            .expect("context should contain a binding");
+        assert_eq!(resolved, binding);
+
+        let Err(mismatch) = context.try_resolve::<String>() else {
+            panic!("a different binding type should report a mismatch");
+        };
+        assert_eq!(mismatch.actual_type_name(), std::any::type_name::<i32>());
+        assert_eq!(
+            mismatch.requested_type_name(),
+            std::any::type_name::<String>()
+        );
+        assert_eq!(
+            mismatch.to_string(),
+            format!(
+                "Field Context contains a binding for {}, but a binding for {} was requested",
+                std::any::type_name::<i32>(),
+                std::any::type_name::<String>()
+            )
+        );
+
+        let resolved_after_mismatch = context
+            .try_resolve::<i32>()
+            .expect("a second supported type should still be queryable")
+            .expect("context should contain a binding");
+        assert_eq!(resolved_after_mismatch, binding);
+
+        assert!(
+            FieldContext::empty()
+                .try_resolve::<i32>()
+                .expect("an absent binding is not a type mismatch")
+                .is_none()
+        );
+
+        VNode::empty()
+    }
+
+    VirtualDom::new(app).rebuild_in_place();
+}
+
+#[test]
 fn context_equality_follows_binding_identity_and_metadata() {
     fn app() -> Element {
         let signal = use_signal(|| 1);
