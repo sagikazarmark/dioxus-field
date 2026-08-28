@@ -164,6 +164,81 @@ fn focus_exit_is_optional_independent_and_part_of_binding_identity() {
 }
 
 #[test]
+fn producer_identity_can_cover_separately_allocated_focus_exit_callbacks() {
+    #[derive(Default)]
+    struct Probe {
+        commits: RefCell<usize>,
+        focus_exits: RefCell<usize>,
+    }
+
+    #[derive(Clone, Copy, PartialEq)]
+    struct ProducerIdentity(&'static str);
+
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "VirtualDom entrypoints receive their root properties by value"
+    )]
+    fn app(probe: Rc<Probe>) -> dioxus_core::Element {
+        let signal = use_signal(|| 7);
+        let read = ReadSignal::from(signal);
+        let first_commit_probe = Rc::clone(&probe);
+        let second_commit_probe = Rc::clone(&probe);
+        let first_focus_exit_probe = Rc::clone(&probe);
+        let second_focus_exit_probe = Rc::clone(&probe);
+        let first_commit = Callback::new(move |()| *first_commit_probe.commits.borrow_mut() += 1);
+        let second_commit = Callback::new(move |()| *second_commit_probe.commits.borrow_mut() += 1);
+        let first_focus_exit =
+            Callback::new(move |()| *first_focus_exit_probe.focus_exits.borrow_mut() += 1);
+        let second_focus_exit =
+            Callback::new(move |()| *second_focus_exit_probe.focus_exits.borrow_mut() += 1);
+
+        assert_ne!(first_commit, second_commit);
+        assert_ne!(first_focus_exit, second_focus_exit);
+
+        let first = Binding::new_with_identity(
+            read,
+            Callback::new(|_| {}),
+            first_commit,
+            ProducerIdentity("form-handle-field"),
+        )
+        .with_focus_exit_using_identity(first_focus_exit);
+        let second = Binding::new_with_identity(
+            read,
+            Callback::new(|_| {}),
+            second_commit,
+            ProducerIdentity("form-handle-field"),
+        )
+        .with_focus_exit_using_identity(second_focus_exit);
+        let different_identity = Binding::new_with_identity(
+            read,
+            Callback::new(|_| {}),
+            Callback::new(|()| {}),
+            ProducerIdentity("other-field"),
+        )
+        .with_focus_exit_using_identity(Callback::new(|()| {}));
+
+        assert_eq!(first, second);
+        assert_ne!(first, different_identity);
+
+        first.focus_exit();
+        assert_eq!(*probe.focus_exits.borrow(), 1);
+        assert_eq!(*probe.commits.borrow(), 0);
+
+        second.commit();
+        assert_eq!(*probe.focus_exits.borrow(), 1);
+        assert_eq!(*probe.commits.borrow(), 1);
+
+        VNode::empty()
+    }
+
+    let probe = Rc::new(Probe::default());
+    VirtualDom::new_with_props(app, Rc::clone(&probe)).rebuild_in_place();
+
+    assert_eq!(*probe.commits.borrow(), 1);
+    assert_eq!(*probe.focus_exits.borrow(), 1);
+}
+
+#[test]
 fn existing_constructors_and_conversions_install_noop_focus_exit() {
     fn app() -> dioxus_core::Element {
         let signal = use_signal(|| 7);

@@ -896,7 +896,8 @@ pub struct Binding<T: 'static> {
 impl<T: 'static> Binding<T> {
     /// Creates a binding identified by its exact read, write, and commit handles.
     ///
-    /// Focus Exit is a no-op unless replaced with [`Binding::with_focus_exit`].
+    /// Focus Exit is a no-op unless replaced with [`Binding::with_focus_exit`] or
+    /// [`Binding::with_focus_exit_using_identity`].
     pub fn new(
         read: ReadSignal<T>,
         write: Callback<(T, ChangeOrigin)>,
@@ -936,6 +937,22 @@ impl<T: 'static> Binding<T> {
     #[must_use]
     pub fn with_focus_exit(mut self, focus_exit: Callback<()>) -> Self {
         self.identity = BindingIdentity::new((self.identity, focus_exit));
+        self.focus_exit = focus_exit;
+        self
+    }
+
+    /// Adds Focus Exit behavior covered by the binding's existing comparable identity.
+    ///
+    /// Unlike [`Binding::with_focus_exit`], this builder does not incorporate the callback's
+    /// allocation identity. Calling it asserts that bindings with equal existing identities also
+    /// have interchangeable Focus Exit behavior, in addition to interchangeable read, write, and
+    /// Commit behavior. Producers that cannot prove this must use [`Binding::with_focus_exit`]
+    /// instead.
+    ///
+    /// This builder does not alter Commit or imply any form-library blur, touched, or validation
+    /// semantics.
+    #[must_use]
+    pub fn with_focus_exit_using_identity(mut self, focus_exit: Callback<()>) -> Self {
         self.focus_exit = focus_exit;
         self
     }
