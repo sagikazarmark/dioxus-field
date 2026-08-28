@@ -245,6 +245,60 @@ fn wrong_context_value_type_is_a_loud_error() {
 }
 
 #[test]
+fn producer_identity_with_focus_exit_ignores_callback_allocation() {
+    #[derive(Default)]
+    struct Probe {
+        focus_exits: RefCell<usize>,
+    }
+
+    #[derive(Clone, Copy, PartialEq)]
+    struct ProducerIdentity(&'static str);
+
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "VirtualDom entrypoints receive their root properties by value"
+    )]
+    fn app(probe: Rc<Probe>) -> dioxus_core::Element {
+        let signal = use_signal(|| 7);
+        let read = ReadSignal::from(signal);
+        let focus_exit_probe = Rc::clone(&probe);
+        let first = Binding::new_with_focus_exit_and_identity(
+            read,
+            Callback::new(|_| {}),
+            Callback::new(|()| {}),
+            Callback::new(move |()| *focus_exit_probe.focus_exits.borrow_mut() += 1),
+            ProducerIdentity("form-handle-field"),
+        );
+        let second = Binding::new_with_focus_exit_and_identity(
+            read,
+            Callback::new(|_| {}),
+            Callback::new(|()| {}),
+            Callback::new(|()| {}),
+            ProducerIdentity("form-handle-field"),
+        );
+        let different_identity = Binding::new_with_focus_exit_and_identity(
+            read,
+            Callback::new(|_| {}),
+            Callback::new(|()| {}),
+            Callback::new(|()| {}),
+            ProducerIdentity("other-field"),
+        );
+
+        assert_eq!(first, second);
+        assert_ne!(first, different_identity);
+        first.focus_exit();
+        assert_eq!(*probe.focus_exits.borrow(), 1);
+
+        VNode::empty()
+    }
+
+    let probe = Rc::new(Probe::default());
+    VirtualDom::new_with_props(app, Rc::clone(&probe)).rebuild_in_place();
+
+    assert_eq!(*probe.focus_exits.borrow(), 1);
+}
+
+#[test]
 fn identity_equality_never_equates_independent_bindings() {
     fn app() -> dioxus_core::Element {
         let first_signal: Signal<i32> = use_signal(|| 1);

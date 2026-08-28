@@ -928,6 +928,37 @@ impl<T: 'static> Binding<T> {
         }
     }
 
+    /// Creates a binding with Focus Exit and a producer-defined comparable identity.
+    ///
+    /// Unlike [`Binding::new_with_identity`] followed by [`Binding::with_focus_exit`], the
+    /// producer identity is not paired with the Focus Exit callback. Two bindings built with
+    /// separately allocated callbacks but equal producer identities therefore compare equal.
+    ///
+    /// # Safety contract
+    ///
+    /// Equal producer identities must always represent interchangeable read, write, Commit, and
+    /// Focus Exit behavior. Producers that cannot prove that interchangeability should use
+    /// [`Binding::new_with_identity`] and [`Binding::with_focus_exit`] instead, which
+    /// conservatively incorporate the Focus Exit callback into binding identity.
+    pub fn new_with_focus_exit_and_identity<I>(
+        read: ReadSignal<T>,
+        write: Callback<(T, ChangeOrigin)>,
+        commit: Callback<()>,
+        focus_exit: Callback<()>,
+        identity: I,
+    ) -> Self
+    where
+        I: PartialEq + 'static,
+    {
+        Self {
+            read,
+            write,
+            commit,
+            focus_exit,
+            identity: BindingIdentity::new(identity),
+        }
+    }
+
     /// Adds the callback invoked when focus leaves the widget's complete logical focus scope.
     ///
     /// This builder also incorporates the callback into binding identity, preserving the guarantee
