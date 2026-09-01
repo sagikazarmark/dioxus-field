@@ -191,6 +191,7 @@ dependencies = [
  "dioxus-hooks",
  "dioxus-signals",
  "dioxus-ssr",
+ "tracing",
 ]
 
 [[package]]

@@ -1269,11 +1269,20 @@ impl FieldContext {
     /// # Panics
     ///
     /// Panics when the field context contains no binding or a binding for a different value type.
+    /// Immediately before panicking, an ERROR-level [`tracing`] event with target `dioxus_field`
+    /// is emitted: message `Field Context binding type mismatch` carrying the `actual` and
+    /// `requested` type names for a wrong-type binding, or message
+    /// `Field Context contains no value binding` carrying `requested` when the context has no
+    /// value binding — both with `field_id` and `field_name` when metadata is available. The
+    /// target, field names, and message substrings are stable observability API. The panic
+    /// message appends the same field identity after the unchanged leading sentence.
     pub fn resolve<T: 'static>(&self) -> Binding<T> {
         match self.try_resolve() {
             Ok(Some(binding)) => binding,
-            Ok(None) => panic!("Field Context contains no value binding"),
-            Err(mismatch) => panic!("{mismatch}"),
+            Ok(None) => binding_diagnostic_panic(None, std::any::type_name::<T>(), self),
+            Err(mismatch) => {
+                binding_diagnostic_panic(Some(mismatch), std::any::type_name::<T>(), self)
+            }
         }
     }
 
@@ -1405,6 +1414,82 @@ impl PartialEq for ErasedBinding {
     }
 }
 
+/// Extracts best-effort field identity from a context for the mismatch diagnostics.
+///
+/// Reads are `try_peek`-only. A plain read would subscribe the panicking scope to metadata
+/// signals it otherwise never reads, so every later metadata write would re-render and re-panic
+/// it; a plain `peek` panics when the signal owner is already dropped, which is a real caller
+/// state ([`FieldContext::resolve`] is callable outside a live runtime). Any failed read is
+/// treated as the identity being absent.
+fn diagnostic_identity(context: &FieldContext) -> (Option<Rc<str>>, Option<Rc<str>>) {
+    if let Some(meta) = &context.meta {
+        let id = meta
+            .id
+            .try_peek()
+            .ok()
+            .and_then(|id| id.clone())
+            .or_else(|| meta.fallback_id.try_peek().ok().map(|id| id.clone()));
+        let name = meta.name.try_peek().ok().and_then(|name| name.clone());
+        (id, name)
+    } else if let Some(values) = &context.meta_values {
+        (values.id.clone(), values.name.clone())
+    } else {
+        (None, None)
+    }
+}
+
+/// The no-value-binding enforcement sentence, shared verbatim by the diagnostic event and the
+/// panic so the two documented surfaces cannot drift apart.
+const NO_VALUE_BINDING_MESSAGE: &str = "Field Context contains no value binding";
+
+/// Emits the diagnostic event for a fatal binding resolution failure, then panics.
+///
+/// The panic is the enforcement; the event is the observability channel that survives where the
+/// panic message does not (dioxus catches render panics and logs only `Any { .. }` on native,
+/// and release wasm builds abort with no message at all). `mismatch: None` is the
+/// no-value-binding failure. The existing panic sentences are de-facto API matched by
+/// `should_panic` tests, so identity is appended after the verbatim sentence, never inserted.
+#[cold]
+#[track_caller]
+fn binding_diagnostic_panic(
+    mismatch: Option<BindingTypeMismatch>,
+    requested: &'static str,
+    context: &FieldContext,
+) -> ! {
+    let (id, name) = diagnostic_identity(context);
+
+    if let Some(mismatch) = &mismatch {
+        tracing::error!(
+            target: "dioxus_field",
+            actual = mismatch.actual_type_name(),
+            requested,
+            field_id = id.as_deref(),
+            field_name = name.as_deref(),
+            "Field Context binding type mismatch"
+        );
+    } else {
+        tracing::error!(
+            target: "dioxus_field",
+            requested,
+            field_id = id.as_deref(),
+            field_name = name.as_deref(),
+            "{NO_VALUE_BINDING_MESSAGE}"
+        );
+    }
+
+    let identity = match (id, name) {
+        (Some(id), Some(name)) => format!(" (field id: {id}, field name: {name})"),
+        (Some(id), None) => format!(" (field id: {id})"),
+        (None, Some(name)) => format!(" (field name: {name})"),
+        (None, None) => String::new(),
+    };
+
+    match mismatch {
+        Some(mismatch) => panic!("{mismatch}{identity}"),
+        None => panic!("{NO_VALUE_BINDING_MESSAGE}{identity}"),
+    }
+}
+
 /// Provides a binding as the current scope's [`FieldContext`].
 ///
 /// The provided context keeps the focus request slot of the context this scope provided on an
@@ -1425,10 +1510,19 @@ pub fn provide_field_context<T: 'static>(binding: Binding<T>) -> FieldContext {
 /// The internal signal hook is called regardless of which source wins so the resolution order can
 /// change between renders without violating Dioxus's hook ordering rules.
 ///
+/// A present Field Context without a value binding is not an error: a metadata-only context is
+/// legitimate producer usage, so resolution falls through to the control's uncontrolled state
+/// silently.
+///
 /// # Panics
 ///
 /// Panics when there is no explicit binding and the Field Context contains a binding for a value
-/// type other than `T`.
+/// type other than `T`. Immediately before panicking, an ERROR-level [`tracing`] event with
+/// target `dioxus_field` and message `Field Context binding type mismatch` is emitted, carrying
+/// the `actual` and `requested` type names plus the `field_id` and `field_name` from the
+/// context's metadata when available. The target, field names, and message substring are stable
+/// observability API. The panic message appends the same field identity after the unchanged
+/// leading sentence.
 pub fn use_binding<T: 'static>(explicit: Option<Binding<T>>, default: T) -> Binding<T> {
     let internal = use_signal(|| default);
 
@@ -1440,7 +1534,9 @@ pub fn use_binding<T: 'static>(explicit: Option<Binding<T>>, default: T) -> Bind
         match context.try_resolve() {
             Ok(Some(binding)) => return binding,
             Ok(None) => {}
-            Err(mismatch) => panic!("{mismatch}"),
+            Err(mismatch) => {
+                binding_diagnostic_panic(Some(mismatch), std::any::type_name::<T>(), &context)
+            }
         }
     }
 
