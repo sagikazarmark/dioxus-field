@@ -115,6 +115,32 @@ the matching override on `FieldControlOptions` instead of adding a second entry.
 merging through `merge_attributes` in `dioxus-primitives` do not need this one — that helper also
 sorts, deduplicates, and concatenates `class`.
 
+## Wrong-Type Binding Diagnostics
+
+A present Field Context binding of the wrong value type never falls back to standalone state: the
+resolving control panics. Immediately before that panic, this crate emits an ERROR-level `tracing`
+event so the type names reach a structured channel. The stable observability surface is the event
+target `dioxus_field`, the fields `actual`, `requested`, `field_id`, and `field_name`, and the
+message substrings `Field Context binding type mismatch` and
+`Field Context contains no value binding`. `dioxus::launch` installs a tracing subscriber by
+default on both native and web, so a stock app sees the event without wiring anything.
+
+The event matters because what the panic itself shows depends on the platform and build profile:
+
+- **Native**: Dioxus catches render panics, so the control's subtree is simply absent while
+  siblings render. std's panic hook prints the message once to stderr, easily lost in `dx serve`
+  scroll, and the framework's own log line names only the component, not the mismatched types. An
+  `ErrorBoundary` shows a fallback but cannot recover the message.
+- **wasm dev builds**: the panic aborts the app mid-render; dioxus-web's devtools panic hook logs
+  the message to the console with a toast.
+- **wasm release builds**: a dead app with no message at all — the tracing event is the only
+  diagnostic. Apps that compile tracing with `release_max_level_off`-style features compile the
+  event out, which is their explicit choice.
+
+Wrapping the app in an `ErrorBoundary` at least makes the failure visible on native. The panic
+message appends the field id and name (when available) after the unchanged leading sentence, so
+existing `should_panic` matchers on the leading sentence keep working.
+
 ## Conformance Testing
 
 Widget registries can use the public `dioxus_field::testing` module from ordinary integration tests;
