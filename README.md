@@ -115,6 +115,26 @@ the matching override on `FieldControlOptions` instead of adding a second entry.
 merging through `merge_attributes` in `dioxus-primitives` do not need this one — that helper also
 sorts, deduplicates, and concatenates `class`.
 
+## Custom Field Parts
+
+`Label`, `FieldDescription`, and `FieldError` register their element ids with the field metadata,
+which is how the control's `aria-labelledby`, `aria-describedby`, and `aria-errormessage` find them.
+A component that renders its own element — an error region that gives each error a stable id, say —
+registers it through the same hooks:
+
+```rust
+use dioxus_field::{use_error_id_registration, use_field_meta};
+
+let meta = use_field_meta(None);
+let id: Rc<str> = Rc::from("email-errors");
+use_error_id_registration(meta, Rc::clone(&id));
+```
+
+`use_label_id_registration` and `use_description_id_registration` do the same for labels and
+descriptions. Each registration lasts as long as the component, and follows the metadata and id
+across renders. `aria-errormessage` takes a single id, so register the element that wraps every
+error rather than each error on its own.
+
 ## Wrong-Type Binding Diagnostics
 
 A present Field Context binding of the wrong value type never falls back to standalone state: the

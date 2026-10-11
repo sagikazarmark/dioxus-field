@@ -607,7 +607,11 @@ fn use_synced_field_meta_state(values: &FieldMetaValues) -> FieldMeta {
     meta
 }
 
-/// A lifecycle-bound description or error id registration.
+/// A lifecycle-bound label, description, or error id registration.
+///
+/// Inside a component, prefer [`use_label_id_registration`], [`use_description_id_registration`],
+/// or [`use_error_id_registration`]: each holds the registration for the component's lifetime and
+/// re-registers when the metadata or id changes.
 pub struct FieldMetaIdRegistration {
     registered_ids: Signal<RegisteredIds>,
     token: u64,
@@ -1730,7 +1734,7 @@ pub struct LabelProps {
 pub fn Label(props: LabelProps) -> Element {
     let (meta, source) = use_resolved_field_meta(props.meta.as_ref());
     let id = use_part_id(props.id, "label");
-    use_field_meta_id_registration(&meta, RegisteredIdKind::Label, Rc::clone(&id));
+    use_label_id_registration(meta, Rc::clone(&id));
     // Metadata the label resolved for itself alone addresses no rendered control, so pointing
     // `for` at its generated id would dangle. Emitting nothing is what 0.1.0 did, and is honest.
     let control_id = (source == FieldMetaSource::Shared).then(|| meta.id().to_string());
@@ -1791,7 +1795,7 @@ pub struct FieldDescriptionProps {
 pub fn FieldDescription(props: FieldDescriptionProps) -> Element {
     let meta = use_field_meta(props.meta);
     let id = use_part_id(props.id, "description");
-    use_field_meta_id_registration(&meta, RegisteredIdKind::Description, Rc::clone(&id));
+    use_description_id_registration(meta, Rc::clone(&id));
     let attributes = part_attributes(
         &meta,
         FieldStateOverrides {
@@ -1851,7 +1855,7 @@ pub struct FieldErrorProps {
 pub fn FieldError(props: FieldErrorProps) -> Element {
     let meta = use_field_meta(props.meta);
     let id = use_part_id(props.id, "error");
-    use_field_meta_id_registration(&meta, RegisteredIdKind::Error, Rc::clone(&id));
+    use_error_id_registration(meta, Rc::clone(&id));
     let invalid = props.invalid.unwrap_or_else(|| meta.invalid());
     let errors = if invalid { meta.errors() } else { Vec::new() };
     let attributes = part_attributes(
@@ -1900,6 +1904,47 @@ fn part_attributes(
     normalize_attributes(&mut attributes);
 
     attributes
+}
+
+/// Keeps a label element id registered with `meta` for this component's lifetime.
+///
+/// This is the hook [`Label`] uses. Call it from a component that renders its own label element
+/// so the control still reaches that element through `aria-labelledby`.
+///
+/// The registration follows `meta` and `id` across renders: when either changes, the old id is
+/// unregistered and the new one takes its place. Ids of one kind are referenced in registration
+/// order.
+pub fn use_label_id_registration(meta: FieldMeta, id: Rc<str>) {
+    use_field_meta_id_registration(&meta, RegisteredIdKind::Label, id);
+}
+
+/// Keeps a description element id registered with `meta` for this component's lifetime.
+///
+/// This is the hook [`FieldDescription`] uses. Call it from a component that renders its own
+/// description element so the control still reaches that element through `aria-describedby`.
+///
+/// The registration follows `meta` and `id` across renders: when either changes, the old id is
+/// unregistered and the new one takes its place. Ids of one kind are referenced in registration
+/// order.
+pub fn use_description_id_registration(meta: FieldMeta, id: Rc<str>) {
+    use_field_meta_id_registration(&meta, RegisteredIdKind::Description, id);
+}
+
+/// Keeps an error element id registered with `meta` for this component's lifetime.
+///
+/// This is the hook [`FieldError`] uses. Call it from a component that renders its own error
+/// element — one that gives each error its own id, say — so the control still reaches that
+/// element through `aria-errormessage` and `aria-describedby` while invalid.
+///
+/// `aria-errormessage` takes a single IDREF in ARIA 1.2, so it references only the first
+/// registered error id. Register the element that wraps every error, as [`FieldError`] does,
+/// rather than each error on its own.
+///
+/// The registration follows `meta` and `id` across renders: when either changes, the old id is
+/// unregistered and the new one takes its place. Ids of one kind are referenced in registration
+/// order.
+pub fn use_error_id_registration(meta: FieldMeta, id: Rc<str>) {
+    use_field_meta_id_registration(&meta, RegisteredIdKind::Error, id);
 }
 
 fn use_field_meta_id_registration(meta: &FieldMeta, kind: RegisteredIdKind, id: Rc<str>) {
