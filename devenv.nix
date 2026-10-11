@@ -1,8 +1,12 @@
 { pkgs, ... }:
 
 {
-  dagger.enable = true;
-  env.DAGGER_X_RELEASE = "v1.0.0-beta.11";
+  dagger = {
+    enable = true;
+    version = "v1.0.0-beta.15";
+
+    dang.enable = true;
+  };
 
   packages = with pkgs; [
     lld
