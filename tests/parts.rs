@@ -7,7 +7,9 @@ use dioxus::prelude::*;
 use dioxus_core::AttributeValue;
 use dioxus_field::{
     Field, FieldContext, FieldControlOptions, FieldDescription, FieldError, FieldMeta,
-    FieldMetaValues, FocusRequest, Label, use_field_meta_state, use_focus_registration,
+    FieldMetaValues, FocusRequest, Label, use_description_id_registration,
+    use_error_id_registration, use_field_meta, use_field_meta_state, use_focus_registration,
+    use_label_id_registration,
 };
 
 struct InvalidProbe {
@@ -532,4 +534,133 @@ fn a_label_with_nothing_to_resolve_points_its_for_at_nothing() {
         rendered.contains("id=\"dxf-label-"),
         "the label keeps its own id, which is what aria-labelledby would reference, got {rendered}"
     );
+}
+
+#[derive(Clone, Props, PartialEq)]
+struct CustomPartsProps {
+    error_id: String,
+}
+
+/// A label, description, and error region rendered by hand, as a design-system renderer that
+/// gives each error its own id would.
+#[allow(non_snake_case)]
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "Dioxus components receive their generated properties by value"
+)]
+fn CustomParts(props: CustomPartsProps) -> Element {
+    let meta = use_field_meta(None);
+    let error_id: Rc<str> = Rc::from(props.error_id.as_str());
+    use_label_id_registration(meta, Rc::from("custom-label"));
+    use_description_id_registration(meta, Rc::from("custom-help"));
+    use_error_id_registration(meta, Rc::clone(&error_id));
+
+    rsx! {
+        span { id: "custom-label", "Email" }
+        p { id: "custom-help", "Use a work address" }
+        div { id: error_id.to_string(), aria_live: "polite",
+            for (index, error) in meta.errors().into_iter().enumerate() {
+                div { key: "{index}", id: "{error_id}-{index}", "{error}" }
+            }
+        }
+    }
+}
+
+struct CustomPartsProbe {
+    meta: RefCell<Option<FieldMeta>>,
+    error_id: RefCell<Option<Signal<String>>>,
+    show_parts: RefCell<Option<Signal<bool>>>,
+}
+
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "VirtualDom entrypoints receive their root properties by value"
+)]
+fn custom_parts_app(probe: Rc<CustomPartsProbe>) -> Element {
+    let meta = use_field_meta_state(FieldMetaValues {
+        invalid: Some(true),
+        errors: vec![Rc::from("Required"), Rc::from("Too short")],
+        ..FieldMetaValues::default()
+    });
+    let error_id = use_signal(|| String::from("custom-errors"));
+    let show_parts = use_signal(|| true);
+    probe.meta.borrow_mut().replace(meta);
+    probe.error_id.borrow_mut().replace(error_id);
+    probe.show_parts.borrow_mut().replace(show_parts);
+
+    rsx! {
+        Field {
+            context: FieldContext::empty().with_meta(meta),
+            if show_parts() {
+                CustomParts { error_id: error_id() }
+            }
+        }
+    }
+}
+
+#[test]
+fn custom_parts_take_part_in_aria_wiring_through_the_public_registration_hooks() {
+    let probe = Rc::new(CustomPartsProbe {
+        meta: RefCell::new(None),
+        error_id: RefCell::new(None),
+        show_parts: RefCell::new(None),
+    });
+    let mut dom = VirtualDom::new_with_props(custom_parts_app, Rc::clone(&probe));
+    dom.rebuild_in_place();
+    let meta = probe.meta.borrow().expect("app should expose field meta");
+
+    let attributes = meta.attributes();
+    assert_eq!(
+        attribute_text(&attributes, "aria-labelledby").as_deref(),
+        Some("custom-label")
+    );
+    assert_eq!(
+        attribute_text(&attributes, "aria-describedby").as_deref(),
+        Some("custom-help custom-errors")
+    );
+    assert_eq!(
+        attribute_text(&attributes, "aria-errormessage").as_deref(),
+        Some("custom-errors")
+    );
+    let rendered = dioxus_ssr::render(&dom);
+    assert!(
+        rendered.contains("id=\"custom-errors-0\""),
+        "got {rendered}"
+    );
+    assert!(
+        rendered.contains("id=\"custom-errors-1\""),
+        "got {rendered}"
+    );
+
+    probe
+        .error_id
+        .borrow_mut()
+        .as_mut()
+        .expect("app should expose error id signal")
+        .set(String::from("renamed-errors"));
+    dom.render_immediate_to_vec();
+
+    let attributes = meta.attributes();
+    assert_eq!(
+        attribute_text(&attributes, "aria-describedby").as_deref(),
+        Some("custom-help renamed-errors"),
+        "a changed id replaces the old registration rather than joining it"
+    );
+    assert_eq!(
+        attribute_text(&attributes, "aria-errormessage").as_deref(),
+        Some("renamed-errors")
+    );
+
+    probe
+        .show_parts
+        .borrow_mut()
+        .as_mut()
+        .expect("app should expose visibility signal")
+        .set(false);
+    dom.render_immediate_to_vec();
+
+    let attributes = meta.attributes();
+    assert_eq!(attribute_text(&attributes, "aria-labelledby"), None);
+    assert_eq!(attribute_text(&attributes, "aria-describedby"), None);
+    assert_eq!(attribute_text(&attributes, "aria-errormessage"), None);
 }
